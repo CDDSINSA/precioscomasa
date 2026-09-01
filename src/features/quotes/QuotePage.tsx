@@ -14,11 +14,7 @@ import { ProductImage } from "./ProductImage";
 import { SkuSearchModal } from "./SkuSearchModal";
 import "./quotes.css";
 
-const initialItems: QuoteItem[] = [
-  { sku: "100634895", quantity: 8 },
-  { sku: "152281753", quantity: 1 },
-  { sku: "140862737", quantity: 2 },
-];
+const initialItems: QuoteItem[] = [];
 
 export function QuotePage() {
   const [segment, setSegment] = useState("");
