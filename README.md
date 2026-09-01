@@ -13,13 +13,30 @@ Aplicacion web para administrar promociones de tienda 5 COMASA y calcular cotiza
 
 ## Configuracion
 
-
+1. Copiar `.env.example` a `.env.local`.
+2. Completar `VITE_SUPABASE_URL` y `VITE_SUPABASE_PUBLISHABLE_KEY`.
+3. Configurar `VITE_CATALOG_TSV_URL` si se desea usar un origen distinto al TSV publicado del catalogo.
+4. Ejecutar `supabase/schema.sql` en el SQL Editor del proyecto Supabase.
+5. Instalar dependencias y ejecutar la aplicacion.
 
 ## Carga de clientes
 
 Desde Administracion se puede cargar el reporte de clientes y usar `Actualizar clientes` para reemplazar la base completa en Supabase. El usuario debe tener rol `admin`.
 
+Tambien queda disponible el script local:
 
+1. Asegurar que `supabase/schema.sql` ya fue ejecutado para crear la tabla `customers`.
+2. Validar el archivo con `npm run sync:customers -- --dry-run "C:/ruta/Clientes Estadisticas de Compras sep26.xlsx"`.
+3. Definir `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` en la terminal local.
+4. Ejecutar `npm run sync:customers -- "C:/ruta/Clientes Estadisticas de Compras sep26.xlsx"`.
+
+El script reemplaza totalmente la tabla `customers`: primero elimina los clientes actuales y despues carga todos los clientes validos del Excel.
+
+## Variables en Vercel
+
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_PUBLISHABLE_KEY`
+- `VITE_CATALOG_TSV_URL`
 
 ## Roles
 

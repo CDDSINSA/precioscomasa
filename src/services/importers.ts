@@ -2,6 +2,29 @@ import type { Customer, ImportedPromotionRow, QuoteItem } from "../types/domain"
 
 type ParseMode = "inspect" | "quote" | "promotion" | "customer";
 
+function toNumber(value: unknown) {
+  if (value === null || value === undefined || value === "") return undefined;
+  const parsed = Number(String(value).replace(/[^\d.,-]/g, "").replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function normalizeHeader(value: unknown) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/\s+/g, " ");
+}
+
+function splitPastedLine(line: string) {
+  return line
+    .trim()
+    .split(/\t|,|;|\s+/)
+    .map((cell) => cell.trim().replace(/^"|"$/g, ""))
+    .filter(Boolean);
+}
+
 function parseFileInWorker<T>(file: File, mode: ParseMode) {
   return new Promise<T>((resolve, reject) => {
     const id = crypto.randomUUID();
@@ -29,6 +52,32 @@ export async function inspectDataFile(file: File) {
 
 export async function parseQuoteFile(file: File): Promise<QuoteItem[]> {
   return parseFileInWorker<QuoteItem[]>(file, "quote");
+}
+
+export function parseQuoteText(text: string): QuoteItem[] {
+  const rows = text
+    .split(/\r?\n/)
+    .map(splitPastedLine)
+    .filter((row) => row.length > 0);
+
+  if (!rows.length) return [];
+
+  const header = rows[0].map(normalizeHeader);
+  const skuIndex = header.findIndex((key) => ["sku", "item", "articulo", "codigo", "cod"].includes(key));
+  const quantityIndex = header.findIndex((key) => ["cantidad", "quantity", "qty", "cant"].includes(key));
+  const hasHeader = skuIndex >= 0;
+  const body = hasHeader ? rows.slice(1) : rows;
+
+  return body
+    .map((row) => {
+      const rawSku = row[hasHeader ? skuIndex : 0] ?? "";
+      const rawQuantity = hasHeader ? row[quantityIndex] : row[1];
+      return {
+        sku: String(rawSku).trim(),
+        quantity: Math.max(1, toNumber(rawQuantity) ?? 1),
+      };
+    })
+    .filter((item) => item.sku);
 }
 
 export async function parsePromotionFile(file: File): Promise<ImportedPromotionRow[]> {

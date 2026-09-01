@@ -11,9 +11,11 @@ export function HomePage() {
   return (
     <div className="home-page">
       <div className="home-head">
-        <img className="home-logo" src={comasaLogo} alt="COMASA" />
-        <span>Cotizador comercial</span>
-        <h1>COMASA</h1>
+        <h1>Cotizador Comercial</h1>
+        <div className="home-brand-line">
+          <img className="home-logo" src={comasaLogo} alt="COMASA" />
+          <span>COMASA</span>
+        </div>
         <p>Gestion de promociones y cotizaciones por segmento comercial.</p>
       </div>
 

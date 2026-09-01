@@ -1,8 +1,7 @@
 import { Download, FileUp, GitCompareArrows, PackagePlus, ReceiptText, Search, Trash2, UserSearch, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { type RefObject, type UIEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Card, CardContent, Header, Metric } from "../../components/ui";
 import { loadCatalog, sampleCatalog } from "../../services/catalog";
-import { parseQuoteFile } from "../../services/importers";
 import { exportQuotePdf } from "../../services/pdf";
 import { segments, sampleOfferRules } from "../../services/promotions";
 import { buildQuote, formatCurrency } from "../../services/quote";
@@ -10,6 +9,7 @@ import { loadOfferRulesForSkus } from "../../services/supabase";
 import type { Customer, OfferRule } from "../../types/domain";
 import type { QuoteItem, QuoteSummary } from "../../types/domain";
 import { CustomerSearchModal } from "./CustomerSearchModal";
+import { ImportQuoteModal } from "./ImportQuoteModal";
 import { ProductImage } from "./ProductImage";
 import { SkuSearchModal } from "./SkuSearchModal";
 import "./quotes.css";
@@ -25,10 +25,14 @@ export function QuotePage() {
   const [compareSegment, setCompareSegment] = useState("");
   const [items, setItems] = useState<QuoteItem[]>(initialItems);
   const [skuModalOpen, setSkuModalOpen] = useState(false);
+  const [importModalOpen, setImportModalOpen] = useState(false);
   const [customerModalOpen, setCustomerModalOpen] = useState(false);
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [catalog, setCatalog] = useState(sampleCatalog);
   const [offerRules, setOfferRules] = useState<OfferRule[]>(sampleOfferRules);
+  const quoteScrollRef = useRef<HTMLDivElement>(null);
+  const compareScrollRef = useRef<HTMLDivElement>(null);
+  const isSyncingScroll = useRef(false);
   const skuList = useMemo(() => items.map((item) => item.sku.trim()).filter(Boolean).join("|"), [items]);
   const quote = useMemo(() => buildQuote(items, segment, offerRules, catalog), [catalog, items, offerRules, segment]);
   const compared = useMemo(
@@ -65,11 +69,6 @@ export function QuotePage() {
     setItems((current) => current.map((row, rowIndex) => (rowIndex === index ? { ...row, ...item } : row)));
   }
 
-  async function handleFile(file?: File) {
-    if (!file) return;
-    setItems(await parseQuoteFile(file));
-  }
-
   function selectCustomer(selectedCustomer: Customer) {
     setCustomer(selectedCustomer);
     setSegment(selectedCustomer.segment);
@@ -80,6 +79,18 @@ export function QuotePage() {
     setCustomer(null);
     setSegment("");
     setCompareSegment("");
+  }
+
+  function syncComparisonScroll(source: "quote" | "compare", event: UIEvent<HTMLDivElement>) {
+    if (!compareSegment || isSyncingScroll.current) return;
+    const target = source === "quote" ? compareScrollRef.current : quoteScrollRef.current;
+    if (!target) return;
+
+    isSyncingScroll.current = true;
+    target.scrollTop = event.currentTarget.scrollTop;
+    window.requestAnimationFrame(() => {
+      isSyncingScroll.current = false;
+    });
   }
 
   return (
@@ -111,11 +122,10 @@ export function QuotePage() {
                   Limpiar
                 </Button>
               ) : null}
-              <label className="btn btn-outline file-btn">
+              <Button variant="outline" onClick={() => setImportModalOpen(true)}>
                 <FileUp size={16} />
                 Importar
-                <input type="file" accept=".xlsx,.csv,.tsv" onChange={(event) => handleFile(event.target.files?.[0])} />
-              </label>
+              </Button>
               <Button variant="outline" onClick={() => setSkuModalOpen(true)}>
                 <PackagePlus size={16} />
                 Agregar SKU
@@ -151,6 +161,9 @@ export function QuotePage() {
           items={items}
           quote={quote}
           segment={segment}
+          isComparing={Boolean(compareSegment)}
+          scrollRef={quoteScrollRef}
+          onScroll={(event) => syncComparisonScroll("quote", event)}
           onChange={updateItem}
           onRemove={(index) => setItems(items.filter((_, itemIndex) => itemIndex !== index))}
         />
@@ -160,6 +173,8 @@ export function QuotePage() {
             baseQuote={quote}
             compared={compared}
             compareSegment={compareSegment}
+            scrollRef={compareScrollRef}
+            onScroll={(event) => syncComparisonScroll("compare", event)}
           />
         ) : null}
       </div>
@@ -170,6 +185,13 @@ export function QuotePage() {
           segment={segment}
           onClose={() => setSkuModalOpen(false)}
           onAddItems={(newItems) => setItems((current) => [...current, ...newItems])}
+        />
+      ) : null}
+      {importModalOpen ? (
+        <ImportQuoteModal
+          onClose={() => setImportModalOpen(false)}
+          onReplaceItems={setItems}
+          onAppendItems={(newItems) => setItems((current) => [...current, ...newItems])}
         />
       ) : null}
       {customerModalOpen ? <CustomerSearchModal onClose={() => setCustomerModalOpen(false)} onSelect={selectCustomer} /> : null}
@@ -200,17 +222,23 @@ function QuoteTable({
   items,
   quote,
   segment,
+  isComparing,
+  scrollRef,
+  onScroll,
   onChange,
   onRemove,
 }: {
   items: QuoteItem[];
   quote: QuoteSummary;
   segment: string;
+  isComparing: boolean;
+  scrollRef: RefObject<HTMLDivElement | null>;
+  onScroll: (event: UIEvent<HTMLDivElement>) => void;
   onChange: (index: number, item: Partial<QuoteItem>) => void;
   onRemove: (index: number) => void;
 }) {
   return (
-    <Card className="grid-card quote-card">
+    <Card className={isComparing ? "grid-card quote-card quote-card-comparing" : "grid-card quote-card"}>
       <CardContent>
         <div className="toolbar">
           <div>
@@ -218,7 +246,7 @@ function QuoteTable({
             <p>Detalle con las ofertas aplicadas al cliente seleccionado.</p>
           </div>
         </div>
-        <div className="table-wrap">
+        <div className="table-wrap" ref={scrollRef} onScroll={onScroll}>
           <table className="quote-table">
             <thead>
               <tr>
@@ -264,10 +292,14 @@ function ComparePanel({
   baseQuote,
   compared,
   compareSegment,
+  scrollRef,
+  onScroll,
 }: {
   baseQuote: QuoteSummary;
   compared?: QuoteSummary;
   compareSegment: string;
+  scrollRef: RefObject<HTMLDivElement | null>;
+  onScroll: (event: UIEvent<HTMLDivElement>) => void;
 }) {
   const difference = compared ? baseQuote.totalWithTax - compared.totalWithTax : 0;
   const differenceLabel = difference >= 0 ? "Ahorro vs segmento original" : "Incremento vs segmento original";
@@ -283,25 +315,32 @@ function ComparePanel({
         </div>
 
         {compared ? (
-          <>
-            <div className="compare-lines">
-              {compared.lines.map((line) => (
-                <div className="compare-line" key={`${compareSegment}-${line.sku}`}>
-                  <div>
-                    <strong>{line.sku}</strong>
-                    <span>{line.appliedOffer ? line.appliedOffer.promotionName : "Sin oferta aplicada"}</span>
+          <div className="compare-table-shell">
+            <div className="compare-table-head">
+              <span>SKU</span>
+              <span>Total final</span>
+            </div>
+            <div className="compare-table-body" ref={scrollRef} onScroll={onScroll}>
+              {baseQuote.lines.map((baseLine, index) => {
+                const line = compared.lines[index];
+                return (
+                  <div className="compare-table-row" key={`${compareSegment}-${baseLine.sku}-${index}`}>
+                    <div>
+                      <strong>{line?.sku ?? baseLine.sku}</strong>
+                      <span>{line?.appliedOffer ? line.appliedOffer.promotionName : "Sin oferta aplicada"}</span>
+                      <small>Ahorro {formatCurrency(line?.savings ?? 0)}</small>
+                    </div>
+                    <p>{formatCurrency(line?.finalTotal ?? 0)}</p>
                   </div>
-                  <p>{formatCurrency(line.finalTotal)}</p>
-                  <small>Ahorro {formatCurrency(line.savings)}</small>
-                </div>
-              ))}
+                );
+              })}
             </div>
             <QuoteTotals quote={compared} label={`Resumen segmento ${compareSegment}`} />
             <div className={difference >= 0 ? "segment-difference positive" : "segment-difference negative"}>
               <span>{differenceLabel}</span>
               <strong>{formatCurrency(Math.abs(difference))}</strong>
             </div>
-          </>
+          </div>
         ) : (
           <p className="empty-copy">Seleccione un segmento para comparar.</p>
         )}
