@@ -10,6 +10,7 @@ import { loadOfferRulesForSkus } from "../../services/supabase";
 import type { Customer, OfferRule } from "../../types/domain";
 import type { QuoteItem, QuoteSummary } from "../../types/domain";
 import { CustomerSearchModal } from "./CustomerSearchModal";
+import { ProductImage } from "./ProductImage";
 import { SkuSearchModal } from "./SkuSearchModal";
 import "./quotes.css";
 
@@ -232,7 +233,7 @@ function QuoteTable({
               {quote.lines.map((line, index) => (
                 <tr key={`${line.sku}-${index}`}>
                   <td className="product-cell">
-                    <img src={line.imageUrl} alt="" loading="lazy" />
+                    <ProductImage src={line.imageUrl} alt={line.product?.description ?? "Producto no encontrado"} />
                     <div>
                       <input value={items[index]?.sku ?? ""} onChange={(event) => onChange(index, { sku: event.target.value })} placeholder="SKU" />
                       <strong>{line.product?.description ?? "Producto no encontrado"}</strong>

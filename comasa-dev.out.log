@@ -20,3 +20,6 @@ Port 5176 is in use, trying another one...
 11:29:38 a. m. [vite] (client) page reload src/features/admin/AdminPage.tsx
 11:31:14 a. m. [vite] (client) page reload src/features/admin/AdminPage.tsx
 11:31:56 a. m. [vite] (client) hmr update /src/styles.css
+12:08:01 p. m. [vite] (client) page reload src/features/quotes/QuotePage.tsx
+12:08:06 p. m. [vite] (client) page reload src/features/quotes/SkuSearchModal.tsx
+12:08:11 p. m. [vite] (client) hmr update /src/features/quotes/quotes.css

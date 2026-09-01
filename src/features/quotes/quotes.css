@@ -78,14 +78,16 @@
 .segment-difference strong { font-size: 1rem; }
 
 .product-cell { display: grid; grid-template-columns: 4.25rem minmax(18rem, 1fr); gap: .75rem; }
-.product-cell img {
+.product-cell .product-image,
+.product-cell .product-image-fallback {
   width: 4.25rem;
   height: 4.25rem;
-  object-fit: cover;
   border: 1px solid var(--color-border);
   border-radius: .75rem;
   background: #fff;
 }
+
+.product-cell .product-image { object-fit: cover; }
 
 .product-cell div { display: grid; gap: .35rem; }
 .product-cell strong { font-size: .86rem; }
@@ -258,13 +260,25 @@
 }
 
 .sku-results button.selected { border-color: rgba(0, 91, 170, .35); background: var(--color-primary-soft); }
-.sku-results img {
+.sku-results .product-image,
+.sku-results .product-image-fallback {
   width: 3.35rem;
   height: 3.35rem;
-  object-fit: cover;
   border: 1px solid var(--color-border);
   border-radius: .7rem;
 }
+
+.sku-results .product-image { object-fit: cover; }
+
+.product-image-fallback {
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: #64748b;
+  background: #f8fafc;
+}
+
+.product-image-fallback svg { stroke-width: 1.8; }
 
 .sku-results span, .selected-product { display: grid; gap: .2rem; min-width: 0; }
 .sku-results small, .selected-product span, .offer-row span, .offer-row small {

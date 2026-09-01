@@ -7,6 +7,7 @@ import type { AvailableOfferGroup } from "../../services/promotions";
 import { formatCurrency } from "../../services/quote";
 import { loadOfferRulesForSkus } from "../../services/supabase";
 import type { Product, QuoteItem, OfferRule } from "../../types/domain";
+import { ProductImage } from "./ProductImage";
 
 type Props = {
   catalog: Product[];
@@ -90,7 +91,7 @@ export function SkuSearchModal({ catalog, segment, onClose, onAddItems }: Props)
                   key={product.sku}
                   onClick={() => selectSku(product.sku)}
                 >
-                  <img src={productImageUrl(product.sku)} alt="" loading="lazy" />
+                  <ProductImage src={productImageUrl(product.sku)} alt={product.description} />
                   <span>
                     <strong>{product.sku}</strong>
                     <small>{product.description}</small>
