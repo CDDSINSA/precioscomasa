@@ -1,0 +1,22 @@
+
+> cotizador-comasa@0.1.0 dev
+> vite --host 127.0.0.1 --host 127.0.0.1 --port 5173
+
+10:43:49 a. m. [vite] (client) Re-optimizing dependencies because vite config has changed
+Port 5173 is in use, trying another one...
+Port 5174 is in use, trying another one...
+Port 5175 is in use, trying another one...
+Port 5176 is in use, trying another one...
+
+  VITE v8.2.2  ready in 584 ms
+
+  ➜  Local:   http://127.0.0.1:5177/
+  ➜  press h + enter to show help
+10:43:50 a. m. [vite] (client) [optimizer] bundling dependencies...
+11:08:12 a. m. [vite] (client) page reload src/services/dataStatus.ts
+11:09:00 a. m. [vite] (client) page reload src/services/importers.ts
+11:09:33 a. m. [vite] (client) page reload src/services/supabase.ts
+11:10:18 a. m. [vite] (client) page reload src/features/admin/AdminPage.tsx
+11:29:38 a. m. [vite] (client) page reload src/features/admin/AdminPage.tsx
+11:31:14 a. m. [vite] (client) page reload src/features/admin/AdminPage.tsx
+11:31:56 a. m. [vite] (client) hmr update /src/styles.css

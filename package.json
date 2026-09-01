@@ -1,0 +1,26 @@
+{
+  "name": "cotizador-comasa",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "sync:customers": "node scripts/syncCustomers.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.112.4",
+    "jspdf": "^4.2.1",
+    "lucide-react": "^1.34.0",
+    "react": "^19.2.8",
+    "read-excel-file": "^9.3.10",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.9.0",
+    "vite": "^8.2.2"
+  }
+}
