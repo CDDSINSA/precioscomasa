@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import type { Customer, ImportedPromotionRow, OfferRule, OfferType } from "../types/domain";
+import { updateStoredDataStatus } from "./dataStatus";
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabasePublishableKey =
@@ -80,6 +81,26 @@ export async function testSupabaseConnection() {
 
   const { error } = await supabase.auth.getSession();
   return error ? { ok: false, label: "Sin conexion" } : { ok: true, label: "Conectado" };
+}
+
+export async function refreshRemoteDataStatuses() {
+  if (!supabase) return;
+
+  const [promotionsCount, customersCount] = await Promise.all([
+    countRows("promotions"),
+    countRows("customers"),
+  ]);
+
+  updateStoredDataStatus(
+    "promotions",
+    statusFromCount(promotionsCount),
+    detailFromCount(promotionsCount, "promociones"),
+  );
+  updateStoredDataStatus(
+    "customers",
+    statusFromCount(customersCount),
+    detailFromCount(customersCount, "clientes"),
+  );
 }
 
 export async function importPromotionRows(rows: ImportedPromotionRow[]) {
@@ -458,6 +479,26 @@ function filterSampleCustomers(term: string, limit: number) {
 
 function escapePostgrestPattern(value: string) {
   return value.replace(/[,%()]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+async function countRows(table: "promotions" | "customers") {
+  if (!supabase) return null;
+
+  const { count, error } = await supabase
+    .from(table)
+    .select("*", { count: "exact", head: true });
+
+  return error ? null : count ?? 0;
+}
+
+function statusFromCount(count: number | null) {
+  if (count === null) return "warning";
+  return count > 0 ? "ok" : "pending";
+}
+
+function detailFromCount(count: number | null, label: string) {
+  if (count === null) return "No se pudo verificar";
+  return count > 0 ? `${count} ${label}` : "Sin datos";
 }
 
 function deduplicateRules(rules: OfferRule[]) {

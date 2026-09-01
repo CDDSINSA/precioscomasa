@@ -4,7 +4,7 @@ import {
   subscribeDataStatus,
   type DataStatusItem,
 } from "../services/dataStatus";
-import { testSupabaseConnection } from "../services/supabase";
+import { refreshRemoteDataStatuses, testSupabaseConnection } from "../services/supabase";
 
 function Led({ item }: { item: DataStatusItem }) {
   return (
@@ -23,9 +23,15 @@ export function SystemStatusIndicator() {
 
   useEffect(() => {
     let active = true;
-    testSupabaseConnection().then((result) => {
+    testSupabaseConnection().then(async (result) => {
       if (!active) return;
       setItems([{ key: "supabase", label: "Supabase", value: result.ok ? "ok" : "warning", detail: result.label }, ...readStoredDataStatuses()]);
+      if (result.ok) {
+        await refreshRemoteDataStatuses();
+        if (active) {
+          setItems([{ key: "supabase", label: "Supabase", value: "ok", detail: result.label }, ...readStoredDataStatuses()]);
+        }
+      }
     });
 
     return () => {
