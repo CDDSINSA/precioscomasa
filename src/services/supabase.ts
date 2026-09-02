@@ -40,6 +40,8 @@ type PromotionRuleRow = {
 type PromotionRow = {
   id: string;
   name: string;
+  starts_at: string | null;
+  ends_at: string | null;
 };
 
 type CustomerRow = {
@@ -360,7 +362,7 @@ async function loadCurrentPromotionMap() {
   const today = todayIso();
   const { data, error } = await supabase
     .from("promotions")
-    .select("id,name")
+    .select("id,name,starts_at,ends_at")
     .neq("status", "vencida")
     .or(`starts_at.is.null,starts_at.lte.${today}`)
     .or(`ends_at.is.null,ends_at.gte.${today}`);
@@ -407,6 +409,8 @@ function mapOfferRules(rows: PromotionRuleRow[], promotions: Map<string, Promoti
       id: row.external_offer_id!,
       promotionId: row.promotion_id!,
       promotionName: promotions.get(row.promotion_id!)?.name ?? row.promotion_id!,
+      startsAt: promotions.get(row.promotion_id!)?.starts_at ?? undefined,
+      endsAt: promotions.get(row.promotion_id!)?.ends_at ?? undefined,
       type: row.offer_type!,
       sku: row.sku!,
       segment: row.segment ?? " - ",

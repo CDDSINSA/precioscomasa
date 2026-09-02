@@ -15,12 +15,6 @@ import { QuotePage } from "./features/quotes/QuotePage";
 import { navigation } from "./constants/navigation";
 import type { AppProfile } from "./types/domain";
 
-const routes = {
-  "/": <HomePage />,
-  "/administracion": <AdminPage />,
-  "/cotizacion": <QuotePage />,
-};
-
 export default function App() {
   const [path, setPath] = useState(window.location.pathname);
   const [profile, setProfile] = useState<AppProfile | null>(null);
@@ -32,7 +26,10 @@ export default function App() {
     ? navigation.filter((item) => item.roles.includes(profile.role)).map((item) => item.path)
     : [];
   const safePath = profile && allowedPaths.includes(path) ? path : profile ? defaultPathForRole(profile.role) : path;
-  const page = routes[safePath as keyof typeof routes] ?? <QuotePage />;
+  const page =
+    safePath === "/" ? <HomePage /> :
+    safePath === "/administracion" ? <AdminPage /> :
+    <QuotePage profile={profile ?? undefined} />;
 
   useEffect(() => {
     const syncPath = () => setPath(window.location.pathname);

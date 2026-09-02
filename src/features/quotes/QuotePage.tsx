@@ -6,7 +6,7 @@ import { exportQuotePdf } from "../../services/pdf";
 import { segments, sampleOfferRules } from "../../services/promotions";
 import { buildQuote, formatCurrency } from "../../services/quote";
 import { loadOfferRulesForSkus } from "../../services/supabase";
-import type { Customer, OfferRule } from "../../types/domain";
+import type { AppProfile, Customer, OfferRule } from "../../types/domain";
 import type { QuoteItem, QuoteSummary } from "../../types/domain";
 import { CustomerSearchModal } from "./CustomerSearchModal";
 import { ImportQuoteModal } from "./ImportQuoteModal";
@@ -16,7 +16,7 @@ import "./quotes.css";
 
 const initialItems: QuoteItem[] = [];
 
-export function QuotePage() {
+export function QuotePage({ profile }: { profile?: AppProfile }) {
   const [segment, setSegment] = useState("");
   const [compareSegment, setCompareSegment] = useState("");
   const [items, setItems] = useState<QuoteItem[]>(initialItems);
@@ -126,7 +126,13 @@ export function QuotePage() {
                 <PackagePlus size={16} />
                 Agregar SKU
               </Button>
-              <Button onClick={() => exportQuotePdf(quote, segment)}>
+              <Button
+                onClick={() => exportQuotePdf(quote, {
+                  customer,
+                  generatedBy: profile?.fullName || profile?.email,
+                  segment,
+                })}
+              >
                 <Download size={16} />
                 PDF
               </Button>

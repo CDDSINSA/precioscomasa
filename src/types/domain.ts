@@ -37,6 +37,8 @@ export type OfferRule = {
   id: string;
   promotionId: string;
   promotionName: string;
+  startsAt?: string;
+  endsAt?: string;
   type: OfferType;
   sku: string;
   segment: string;
