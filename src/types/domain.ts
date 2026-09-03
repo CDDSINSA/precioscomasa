@@ -17,10 +17,33 @@ export type Product = {
   sku: string;
   legacyNumber?: string;
   description: string;
+  unitOfMeasure?: string;
   listPrice: number;
   partNumber?: string;
   maxDiscount?: number;
   taxable: boolean;
+};
+
+export type StoreLocation = {
+  id: string;
+  name: string;
+};
+
+export type InventoryRecord = {
+  storeId: string;
+  sku: string;
+  quantity: number;
+};
+
+export type InventoryStoreStock = {
+  storeId: string;
+  storeName: string;
+  quantity: number;
+};
+
+export type ProductInventory = {
+  totalQuantity: number;
+  stores: InventoryStoreStock[];
 };
 
 export type Promotion = {

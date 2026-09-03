@@ -1,2 +1,0 @@
-4:10:10 p. m. [vite] (client) error while updating dependencies:
-Error: ENOENT: no such file or directory, rename 'C:\Users\arlen.aguilar\Documents\proyectos APP codex\cotizador_comasa\node_modules\.vite\deps' -> 'C:\Users\arlen.aguilar\Documents\proyectos APP codex\cotizador_comasa\node_modules\.vite\deps_temp_39f7414b'

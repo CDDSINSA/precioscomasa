@@ -1,5 +1,6 @@
 import type { Product } from "../types/domain";
 import { updateStoredDataStatus } from "./dataStatus";
+import { loadProductsFromSupabase } from "./supabase";
 
 export const imageBaseUrl =
   "https://integration-oic-vtex-bucket.s3.us-east-1.amazonaws.com/B2C-images";
@@ -12,6 +13,7 @@ export const sampleCatalog: Product[] = [
     sku: "100535125",
     legacyNumber: "5605153400",
     description: "CHUPON UNIVERSAL 1-1/2 Y 1-1/4 COFLEX",
+    unitOfMeasure: "EA",
     listPrice: 76.6,
     partNumber: "2-P-B9030",
     maxDiscount: 5,
@@ -21,6 +23,7 @@ export const sampleCatalog: Product[] = [
     sku: "100634895",
     legacyNumber: "3205428800",
     description: "CAJA DE HERRAMIENTAS/COSMETIQUERA 14 PRETUL",
+    unitOfMeasure: "EA",
     listPrice: 373.04,
     partNumber: "25052",
     maxDiscount: 5,
@@ -29,6 +32,7 @@ export const sampleCatalog: Product[] = [
   {
     sku: "145617861",
     description: "CINCEL ACANALADO SDS MAX 7/8X16 TRUPER",
+    unitOfMeasure: "EA",
     listPrice: 425.22,
     partNumber: "101239",
     maxDiscount: 5,
@@ -37,6 +41,7 @@ export const sampleCatalog: Product[] = [
   {
     sku: "136550781",
     description: "SWITCH DE 8 PUERTOS PARA ETHERNET GIGABIT NEXXT",
+    unitOfMeasure: "EA",
     listPrice: 1346.96,
     partNumber: "ASBDT084U2",
     taxable: true,
@@ -44,6 +49,7 @@ export const sampleCatalog: Product[] = [
   {
     sku: "152281753",
     description: "JUEGO DE HERRAMIENTAS STANLEY 141 PIEZAS",
+    unitOfMeasure: "EA",
     listPrice: 10670,
     partNumber: "STMT98109-LA",
     maxDiscount: 5,
@@ -52,6 +58,7 @@ export const sampleCatalog: Product[] = [
   {
     sku: "140862737",
     description: "AURICULARES GAMING DARTH VADER CON MICROFONO PRIMUS",
+    unitOfMeasure: "EA",
     listPrice: 1149,
     partNumber: "PHS-SW15",
     taxable: true,
@@ -87,7 +94,8 @@ function parseCatalogTsv(text: string): Product[] {
       sku: String(value(row, ["item", "sku", "articulo"], 0)).trim(),
       legacyNumber: String(value(row, ["legacy_number"], 1)).trim(),
       description: String(value(row, ["item_desc", "descripcion", "description"], 3)).trim(),
-      listPrice: parseNumber(value(row, ["unit_retail", "precio de lista", "list_price"], 11)),
+      unitOfMeasure: String(value(row, ["standard_uom", "unidad de medida", "uom"], 7)).trim(),
+      listPrice: parseNumber(value(row, ["unit_retail", "precio de lista", "list_price"], 12)),
       partNumber: String(value(row, ["vpn", "numero de parte", "part_number"], 13)).trim(),
       maxDiscount: parseNumber(value(row, ["tienda_desc_max"], 26)) || undefined,
       taxable: String(value(row, ["aplica_impuesto"], 25)).trim().toUpperCase() !== "N",
@@ -96,6 +104,12 @@ function parseCatalogTsv(text: string): Product[] {
 }
 
 export async function loadCatalog() {
+  const supabaseCatalog = await loadProductsFromSupabase();
+  if (supabaseCatalog?.length) {
+    updateStoredDataStatus("catalog", "ok", `${supabaseCatalog.length} productos`);
+    return supabaseCatalog;
+  }
+
   const url = import.meta.env.VITE_CATALOG_TSV_URL || defaultCatalogUrl;
 
   try {
@@ -103,10 +117,10 @@ export async function loadCatalog() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const catalog = parseCatalogTsv(await response.text());
     if (!catalog.length) throw new Error("Catalogo sin filas validas");
-    updateStoredDataStatus("master", "ok", `${catalog.length} productos`);
+    updateStoredDataStatus("catalog", "warning", `${catalog.length} productos en Drive`);
     return catalog;
   } catch {
-    updateStoredDataStatus("master", "warning", "Usando respaldo local");
+    updateStoredDataStatus("catalog", "warning", "Usando respaldo local");
     return sampleCatalog;
   }
 }

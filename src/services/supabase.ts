@@ -1,5 +1,16 @@
 import { createClient } from "@supabase/supabase-js";
-import type { Customer, ImportedPromotionRow, OfferRule, OfferType } from "../types/domain";
+import { inventoryFeatureEnabled } from "../config/features";
+import type {
+  Customer,
+  ImportedPromotionRow,
+  InventoryRecord,
+  OfferRule,
+  OfferType,
+  Product,
+  ProductInventory,
+  QuoteSummary,
+  StoreLocation,
+} from "../types/domain";
 import { updateStoredDataStatus } from "./dataStatus";
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -11,6 +22,13 @@ export const supabase =
 export const hasSupabaseConfig = Boolean(supabase);
 
 export type PromotionSyncMode = "full" | "partial";
+export type RemoteDataMetrics = {
+  promotions: number | null;
+  customers: number | null;
+  catalog: number | null;
+  inventory: number | null;
+  stores: number | null;
+};
 
 type SyncProgressCallback = (sent: number, total: number, detail?: string) => void;
 
@@ -56,6 +74,56 @@ type CustomerRow = {
   address: string | null;
 };
 
+type ProductRow = {
+  sku: string;
+  legacy_number: string | null;
+  description: string;
+  unit_of_measure: string | null;
+  list_price: number | string | null;
+  part_number: string | null;
+  max_discount: number | string | null;
+  taxable: boolean | null;
+};
+
+type InventoryRow = {
+  store_id: string;
+  sku: string;
+  quantity: number | string | null;
+};
+
+type StoreRow = {
+  id: string;
+  name: string;
+};
+
+type IssueQuoteOptions = {
+  customer?: Customer | null;
+  segment: string;
+  comparedSegment?: string;
+};
+
+export type IssuedQuote = {
+  id: string;
+  quoteCode: string;
+  quoteNumber: number;
+  createdAt: string;
+  generatedByName?: string;
+  generatedByEmail?: string;
+};
+
+type IssueQuoteResult =
+  | { ok: true; quote: IssuedQuote }
+  | { ok: false; message: string };
+
+type IssuedQuoteRow = {
+  quote_id: string;
+  quote_code: string;
+  quote_number: number | string;
+  created_at: string;
+  generated_by_name: string | null;
+  generated_by_email: string | null;
+};
+
 export const sampleCustomers: Customer[] = [
   {
     customerId: "267637",
@@ -78,6 +146,12 @@ export const sampleCustomers: Customer[] = [
   },
 ];
 
+export const sampleStores: StoreLocation[] = [
+  { id: "5", name: "COMASA" },
+  { id: "35", name: "COMASA FORANEA" },
+  { id: "1041", name: "CEDI" },
+];
+
 export async function testSupabaseConnection() {
   if (!supabase) return { ok: false, label: "No configurado" };
 
@@ -88,21 +162,52 @@ export async function testSupabaseConnection() {
 export async function refreshRemoteDataStatuses() {
   if (!supabase) return;
 
-  const [promotionsCount, customersCount] = await Promise.all([
-    countRows("promotions"),
-    countRows("customers"),
-  ]);
+  const metrics = await loadRemoteDataMetrics();
 
   updateStoredDataStatus(
     "promotions",
-    statusFromCount(promotionsCount),
-    detailFromCount(promotionsCount, "promociones"),
+    statusFromCount(metrics.promotions),
+    detailFromCount(metrics.promotions, "promociones"),
   );
   updateStoredDataStatus(
     "customers",
-    statusFromCount(customersCount),
-    detailFromCount(customersCount, "clientes"),
+    statusFromCount(metrics.customers),
+    detailFromCount(metrics.customers, "clientes"),
   );
+  updateStoredDataStatus(
+    "catalog",
+    statusFromCount(metrics.catalog),
+    detailFromCount(metrics.catalog, "productos"),
+  );
+
+  if (inventoryFeatureEnabled) {
+    updateStoredDataStatus(
+      "inventory",
+      statusFromCount(metrics.inventory),
+      detailFromCount(metrics.inventory, "registros"),
+    );
+    updateStoredDataStatus(
+      "stores",
+      statusFromCount(metrics.stores),
+      detailFromCount(metrics.stores, "tiendas"),
+    );
+  }
+}
+
+export async function loadRemoteDataMetrics(): Promise<RemoteDataMetrics> {
+  if (!supabase) {
+    return { promotions: null, customers: null, catalog: null, inventory: null, stores: null };
+  }
+
+  const [promotions, customers, catalog, inventory, stores] = await Promise.all([
+    countRows("promotions"),
+    countRows("customers"),
+    countRows("products"),
+    inventoryFeatureEnabled ? countRows("inventory") : Promise.resolve(null),
+    inventoryFeatureEnabled ? countRows("stores") : Promise.resolve(null),
+  ]);
+
+  return { promotions, customers, catalog, inventory, stores };
 }
 
 export async function importPromotionRows(rows: ImportedPromotionRow[]) {
@@ -111,6 +216,59 @@ export async function importPromotionRows(rows: ImportedPromotionRow[]) {
   }
 
   return importPromotionRowsInBatches(rows);
+}
+
+export async function issueQuote(summary: QuoteSummary, options: IssueQuoteOptions): Promise<IssueQuoteResult> {
+  if (!supabase) {
+    return { ok: false, message: "Supabase no esta configurado; no se puede asignar un consecutivo seguro." };
+  }
+
+  if (!summary.lines.length) {
+    return { ok: false, message: "Agregue al menos un SKU antes de generar el PDF." };
+  }
+
+  const payload = {
+    customer: options.customer ? customerQuotePayload(options.customer) : null,
+    original_segment: options.segment,
+    compared_segment: options.comparedSegment || null,
+    subtotal_list: summary.subtotalList,
+    subtotal_final: summary.subtotalFinal,
+    tax: summary.tax,
+    total_with_tax: summary.totalWithTax,
+    savings: summary.savings,
+    lines: summary.lines.map((line) => ({
+      sku: line.sku,
+      quantity: line.quantity,
+      list_price: line.unitPrice,
+      list_total: line.listTotal,
+      final_total: line.finalTotal,
+      savings: line.savings,
+      product_description: line.product?.description ?? null,
+      applied_offer_id: line.appliedOffer?.id ?? null,
+      applied_promotion_id: line.appliedOffer?.promotionId ?? null,
+      applied_promotion_name: line.appliedOffer?.promotionName ?? null,
+    })),
+  };
+
+  const { data, error } = await supabase.rpc("issue_quote", { payload });
+  if (error) return { ok: false, message: error.message };
+
+  const row = Array.isArray(data) ? data[0] as IssuedQuoteRow | undefined : undefined;
+  if (!row?.quote_id || !row.quote_code) {
+    return { ok: false, message: "La cotizacion se envio, pero Supabase no devolvio el consecutivo." };
+  }
+
+  return {
+    ok: true,
+    quote: {
+      id: row.quote_id,
+      quoteCode: row.quote_code,
+      quoteNumber: Number(row.quote_number),
+      createdAt: row.created_at,
+      generatedByName: row.generated_by_name ?? undefined,
+      generatedByEmail: row.generated_by_email ?? undefined,
+    },
+  };
 }
 
 export async function importPromotionRowsInBatches(
@@ -145,6 +303,95 @@ export async function searchCustomers(term: string, limit = 30): Promise<Custome
   const { data, error } = await request;
   if (error || !data) return [];
   return (data as CustomerRow[]).map(mapCustomer);
+}
+
+export async function loadStores(): Promise<StoreLocation[]> {
+  if (!inventoryFeatureEnabled) return [];
+  if (!supabase) return sampleStores;
+
+  const { data, error } = await supabase
+    .from("stores")
+    .select("id,name")
+    .order("id", { ascending: true });
+
+  if (error || !data) return sampleStores;
+  return (data as StoreRow[]).map((store) => ({ id: store.id, name: store.name }));
+}
+
+export async function loadProductsFromSupabase(): Promise<Product[] | null> {
+  if (!supabase) return null;
+
+  const { data, error } = await supabase
+    .from("products")
+    .select("sku,legacy_number,description,unit_of_measure,list_price,part_number,max_discount,taxable")
+    .order("description", { ascending: true })
+    .limit(8000);
+
+  if (error || !data?.length) return null;
+  return (data as ProductRow[]).map(mapProduct);
+}
+
+export async function searchProductsFromSupabase(term: string, limit = 60): Promise<Product[] | null> {
+  if (!supabase) return null;
+
+  const query = term.trim();
+  let request = supabase
+    .from("products")
+    .select("sku,legacy_number,description,unit_of_measure,list_price,part_number,max_discount,taxable")
+    .order("description", { ascending: true })
+    .limit(limit);
+
+  if (query) {
+    const pattern = `%${escapePostgrestPattern(query)}%`;
+    request = request.or(
+      [
+        `sku.ilike.${pattern}`,
+        `description.ilike.${pattern}`,
+        `part_number.ilike.${pattern}`,
+        `legacy_number.ilike.${pattern}`,
+      ].join(","),
+    );
+  }
+
+  const { data, error } = await request;
+  if (error || !data?.length) return null;
+  return (data as ProductRow[]).map(mapProduct);
+}
+
+export async function loadProductsBySkus(skus: string[]): Promise<Product[]> {
+  if (!supabase) return [];
+
+  const cleanSkus = unique(skus.map((sku) => sku.trim()).filter(Boolean));
+  if (!cleanSkus.length) return [];
+
+  const { data, error } = await supabase
+    .from("products")
+    .select("sku,legacy_number,description,unit_of_measure,list_price,part_number,max_discount,taxable")
+    .in("sku", cleanSkus);
+
+  if (error || !data) return [];
+  return (data as ProductRow[]).map(mapProduct);
+}
+
+export async function loadInventoryForSkus(skus: string[], storeIds: string[] = []): Promise<Map<string, ProductInventory>> {
+  if (!inventoryFeatureEnabled) return new Map();
+  if (!supabase) return new Map();
+
+  const cleanSkus = unique(skus.map((sku) => sku.trim()).filter(Boolean));
+  if (!cleanSkus.length) return new Map();
+
+  let request = supabase
+    .from("inventory")
+    .select("store_id,sku,quantity")
+    .in("sku", cleanSkus)
+    .gt("quantity", 0);
+
+  if (storeIds.length) request = request.in("store_id", storeIds);
+
+  const { data, error } = await request;
+  if (error || !data) return new Map();
+  const storeMap = new Map((await loadStores()).map((store) => [store.id, store.name]));
+  return mapInventory(data as InventoryRow[], storeMap);
 }
 
 export async function syncCustomersToSupabase(
@@ -188,6 +435,83 @@ export async function syncCustomersToSupabase(
       `Sincronizacion de clientes completada: ${validCustomers.length} clientes publicados.` +
       (duplicates ? ` ${duplicates} duplicados consolidados.` : ""),
   };
+}
+
+export async function syncProductsToSupabase(
+  products: Product[],
+  onProgress?: SyncProgressCallback,
+) {
+  if (!supabase) {
+    return { ok: false, message: "Supabase no esta configurado en este entorno." };
+  }
+
+  const validProducts = deduplicateProducts(products.filter((product) => product.sku && product.description && product.listPrice > 0));
+  if (!validProducts.length) return { ok: false, message: "No hay productos validos para sincronizar." };
+
+  onProgress?.(0, validProducts.length, "Eliminando catalogo anterior");
+  const deleted = await supabase.from("products").delete().not("sku", "is", null);
+  if (deleted.error) return { ok: false, message: deleted.error.message };
+
+  const uploaded = await uploadInChunks(validProducts, 700, onProgress, "Cargando catalogo vigente", async (chunk) =>
+    supabase.from("products").insert(chunk.map(productPayload)),
+  );
+  if (!uploaded.ok) return uploaded;
+
+  return { ok: true, message: `Sincronizacion de catalogo completada: ${validProducts.length} productos publicados.` };
+}
+
+export async function syncInventoryToSupabase(
+  records: InventoryRecord[],
+  onProgress?: SyncProgressCallback,
+) {
+  if (!inventoryFeatureEnabled) {
+    return { ok: false, message: "La logica de inventario esta desactivada en este entorno." };
+  }
+
+  if (!supabase) {
+    return { ok: false, message: "Supabase no esta configurado en este entorno." };
+  }
+
+  const validRecords = deduplicateInventory(records.filter((record) => record.storeId && record.sku));
+  if (!validRecords.length) return { ok: false, message: "No hay inventario valido para sincronizar." };
+
+  onProgress?.(0, validRecords.length, "Eliminando inventario anterior");
+  const deleted = await supabase.from("inventory").delete().not("sku", "is", null);
+  if (deleted.error) return { ok: false, message: deleted.error.message };
+
+  const uploaded = await uploadInChunks(validRecords, 900, onProgress, "Cargando inventario vigente", async (chunk) =>
+    supabase.from("inventory").insert(chunk.map(inventoryPayload)),
+  );
+  if (!uploaded.ok) return uploaded;
+
+  return { ok: true, message: `Sincronizacion de inventario completada: ${validRecords.length} registros publicados.` };
+}
+
+export async function syncStoresToSupabase(
+  stores: StoreLocation[],
+  onProgress?: SyncProgressCallback,
+) {
+  if (!inventoryFeatureEnabled) {
+    return { ok: false, message: "La logica de tiendas para inventario esta desactivada en este entorno." };
+  }
+
+  if (!supabase) {
+    return { ok: false, message: "Supabase no esta configurado en este entorno." };
+  }
+
+  const validStores = deduplicateStores(stores.filter((store) => store.id && store.name));
+  if (!validStores.length) return { ok: false, message: "No hay tiendas validas para sincronizar." };
+
+  onProgress?.(0, validStores.length, "Eliminando tiendas anteriores");
+  const deleted = await supabase.from("stores").delete().not("id", "is", null);
+  if (deleted.error) return { ok: false, message: deleted.error.message };
+
+  const uploaded = await uploadInChunks(validStores, 700, onProgress, "Cargando tiendas vigentes", async (chunk) =>
+    supabase.from("stores").insert(chunk),
+  );
+  if (!uploaded.ok) return uploaded;
+
+  return { ok: true, message: `Sincronizacion de tiendas completada: ${validStores.length} tiendas publicadas.` };
 }
 
 export async function syncPromotionsToSupabase(
@@ -438,6 +762,40 @@ function mapCustomer(row: CustomerRow): Customer {
   };
 }
 
+function mapProduct(row: ProductRow): Product {
+  return {
+    sku: row.sku,
+    legacyNumber: row.legacy_number ?? undefined,
+    description: row.description,
+    unitOfMeasure: row.unit_of_measure ?? undefined,
+    listPrice: Number(row.list_price ?? 0),
+    partNumber: row.part_number ?? undefined,
+    maxDiscount: row.max_discount === null ? undefined : Number(row.max_discount),
+    taxable: row.taxable ?? true,
+  };
+}
+
+function mapInventory(rows: InventoryRow[], storeMap: Map<string, string>) {
+  const grouped = new Map<string, ProductInventory>();
+  rows.forEach((row) => {
+    const current = grouped.get(row.sku) ?? { totalQuantity: 0, stores: [] };
+    const quantity = Number(row.quantity ?? 0);
+    current.totalQuantity += quantity;
+    current.stores.push({
+      storeId: row.store_id,
+      storeName: storeMap.get(row.store_id) || `Tienda ${row.store_id}`,
+      quantity,
+    });
+    grouped.set(row.sku, current);
+  });
+
+  grouped.forEach((inventory) => {
+    inventory.stores.sort((left, right) => right.quantity - left.quantity);
+  });
+
+  return grouped;
+}
+
 function customerPayload(customer: Customer) {
   return {
     customer_id: customer.customerId,
@@ -451,6 +809,80 @@ function customerPayload(customer: Customer) {
     address: customer.address ?? null,
     updated_at: new Date().toISOString(),
   };
+}
+
+function customerQuotePayload(customer: Customer) {
+  return {
+    customer_id: customer.customerId,
+    display_name: customer.displayName,
+    mobile: customer.mobile ?? null,
+    national_id: customer.nationalId ?? null,
+    segment: customer.segment,
+    address: customer.address ?? null,
+  };
+}
+
+function productPayload(product: Product) {
+  return {
+    sku: product.sku,
+    legacy_number: product.legacyNumber ?? null,
+    description: product.description,
+    unit_of_measure: product.unitOfMeasure ?? null,
+    list_price: product.listPrice,
+    part_number: product.partNumber ?? null,
+    max_discount: product.maxDiscount ?? null,
+    taxable: product.taxable,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function inventoryPayload(record: InventoryRecord) {
+  return {
+    store_id: record.storeId,
+    sku: record.sku,
+    quantity: record.quantity,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+async function uploadInChunks<T>(
+  rows: T[],
+  chunkSize: number,
+  onProgress: SyncProgressCallback | undefined,
+  detail: string,
+  upload: (chunk: T[]) => Promise<{ error: { message: string } | null }>,
+) {
+  for (let index = 0; index < rows.length; index += chunkSize) {
+    const chunk = rows.slice(index, index + chunkSize);
+    const response = await upload(chunk);
+    if (response.error) return { ok: false, message: response.error.message };
+    onProgress?.(Math.min(index + chunk.length, rows.length), rows.length, detail);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  return { ok: true, message: `Carga completada: ${rows.length} filas.` };
+}
+
+function deduplicateProducts(products: Product[]) {
+  const grouped = new Map<string, Product>();
+  products.forEach((product) => grouped.set(product.sku, product));
+  return [...grouped.values()];
+}
+
+function deduplicateInventory(records: InventoryRecord[]) {
+  const grouped = new Map<string, InventoryRecord>();
+  records.forEach((record) => {
+    const key = `${record.storeId}|${record.sku}`;
+    const current = grouped.get(key);
+    grouped.set(key, current ? { ...record, quantity: current.quantity + record.quantity } : record);
+  });
+  return [...grouped.values()];
+}
+
+function deduplicateStores(stores: StoreLocation[]) {
+  const grouped = new Map<string, StoreLocation>();
+  stores.forEach((store) => grouped.set(store.id, store));
+  return [...grouped.values()];
 }
 
 function deduplicateCustomers(customers: Customer[]) {
@@ -485,7 +917,7 @@ function escapePostgrestPattern(value: string) {
   return value.replace(/[,%()]/g, " ").replace(/\s+/g, " ").trim();
 }
 
-async function countRows(table: "promotions" | "customers") {
+async function countRows(table: "promotions" | "customers" | "products" | "inventory" | "stores") {
   if (!supabase) return null;
 
   const { count, error } = await supabase

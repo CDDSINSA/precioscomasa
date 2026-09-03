@@ -1,6 +1,6 @@
-import type { Customer, ImportedPromotionRow, QuoteItem } from "../types/domain";
+import type { Customer, ImportedPromotionRow, InventoryRecord, Product, QuoteItem, StoreLocation } from "../types/domain";
 
-type ParseMode = "inspect" | "quote" | "promotion" | "customer";
+type ParseMode = "inspect" | "quote" | "promotion" | "customer" | "catalog" | "inventory" | "store";
 
 function toNumber(value: unknown) {
   if (value === null || value === undefined || value === "") return undefined;
@@ -86,4 +86,16 @@ export async function parsePromotionFile(file: File): Promise<ImportedPromotionR
 
 export async function parseCustomerFile(file: File): Promise<Customer[]> {
   return parseFileInWorker<Customer[]>(file, "customer");
+}
+
+export async function parseCatalogFile(file: File): Promise<Product[]> {
+  return parseFileInWorker<Product[]>(file, "catalog");
+}
+
+export async function parseInventoryFile(file: File): Promise<InventoryRecord[]> {
+  return parseFileInWorker<InventoryRecord[]>(file, "inventory");
+}
+
+export async function parseStoreFile(file: File): Promise<StoreLocation[]> {
+  return parseFileInWorker<StoreLocation[]>(file, "store");
 }

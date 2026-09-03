@@ -171,21 +171,38 @@ export function availableOfferGroups(rules: OfferRule[], sku: string, segment: s
   return [...groups.values()];
 }
 
-export function estimateLineTotal(listPrice: number, quantity: number, rule?: OfferRule) {
-  if (!rule) return listPrice * quantity;
+export function sortOfferGroupsByUnitPrice(groups: AvailableOfferGroup[], listPrice: number) {
+  return [...groups].sort((left, right) => {
+    const leftPrice = estimateOfferGroupUnitPrice(listPrice, left);
+    const rightPrice = estimateOfferGroupUnitPrice(listPrice, right);
+    if (leftPrice !== rightPrice) return leftPrice - rightPrice;
+    return left.primary.id.localeCompare(right.primary.id);
+  });
+}
 
-  if ((rule.type === "FIXED_QTY_PRICE" || rule.type === "KIT_OFFER") && rule.fixedPrice && rule.fixedPrice < listPrice) {
-    return rule.fixedPrice * quantity;
+export function estimateOfferGroupUnitPrice(listPrice: number, group: AvailableOfferGroup) {
+  return estimateUnitPrice(listPrice, group.primary);
+}
+
+export function estimateLineTotal(listPrice: number, quantity: number, rule?: OfferRule) {
+  return estimateUnitPrice(listPrice, rule) * quantity;
+}
+
+export function estimateUnitPrice(listPrice: number, rule?: OfferRule) {
+  if (!rule) return listPrice;
+
+  if ((rule.type === "FIXED_QTY_PRICE" || rule.type === "KIT_OFFER") && rule.fixedPrice !== undefined) {
+    return rule.fixedPrice;
   }
 
   if (
     (rule.type === "LINE_ITEM_DISCOUNT" || rule.type === "TIERED_DISCOUNT" || rule.type === "KIT_OFFER") &&
     rule.discountPercent
   ) {
-    return listPrice * quantity * (1 - rule.discountPercent / 100);
+    return listPrice * (1 - rule.discountPercent / 100);
   }
 
-  return listPrice * quantity;
+  return listPrice;
 }
 
 export function findBestRule(rules: OfferRule[], sku: string, segment: string, quantity: number, price: number) {

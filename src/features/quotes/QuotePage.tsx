@@ -1,13 +1,15 @@
 import { Download, FileUp, GitCompareArrows, PackagePlus, ReceiptText, Search, Trash2, UserSearch, X } from "lucide-react";
-import { type RefObject, type UIEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type RefObject, type UIEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AppFeedback } from "../../components/AppFeedback";
 import { Button, Card, CardContent, Header, Metric } from "../../components/ui";
+import { inventoryFeatureEnabled } from "../../config/features";
 import { loadCatalog, sampleCatalog } from "../../services/catalog";
 import { exportQuotePdf } from "../../services/pdf";
 import { segments, sampleOfferRules } from "../../services/promotions";
 import { buildQuote, formatCurrency } from "../../services/quote";
-import { loadOfferRulesForSkus } from "../../services/supabase";
+import { issueQuote, loadOfferRulesForSkus, loadProductsBySkus, loadStores } from "../../services/supabase";
 import type { AppProfile, Customer, OfferRule } from "../../types/domain";
-import type { QuoteItem, QuoteSummary } from "../../types/domain";
+import type { Product, QuoteItem, QuoteSummary, StoreLocation } from "../../types/domain";
 import { CustomerSearchModal } from "./CustomerSearchModal";
 import { ImportQuoteModal } from "./ImportQuoteModal";
 import { ProductImage } from "./ProductImage";
@@ -25,7 +27,12 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
   const [customerModalOpen, setCustomerModalOpen] = useState(false);
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [catalog, setCatalog] = useState(sampleCatalog);
+  const [stores, setStores] = useState<StoreLocation[]>([]);
+  const [selectedStoreIds, setSelectedStoreIds] = useState<string[]>(["1041"]);
+  const [requireStock, setRequireStock] = useState(true);
   const [offerRules, setOfferRules] = useState<OfferRule[]>(sampleOfferRules);
+  const [issuingPdf, setIssuingPdf] = useState(false);
+  const [quoteFeedback, setQuoteFeedback] = useState<{ tone: "success" | "warning" | "info"; message: string } | null>(null);
   const quoteScrollRef = useRef<HTMLDivElement>(null);
   const compareScrollRef = useRef<HTMLDivElement>(null);
   const isSyncingScroll = useRef(false);
@@ -35,11 +42,25 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
     () => (compareSegment ? buildQuote(items, compareSegment, offerRules, catalog) : undefined),
     [catalog, compareSegment, items, offerRules],
   );
+  const mergeCatalogProducts = useCallback((products: Product[]) => {
+    if (!products.length) return;
+    setCatalog((current) => {
+      const grouped = new Map(current.map((product) => [product.sku, product]));
+      products.forEach((product) => grouped.set(product.sku, product));
+      return [...grouped.values()];
+    });
+  }, []);
 
   useEffect(() => {
     let active = true;
     loadCatalog().then((loadedCatalog) => {
       if (active) setCatalog(loadedCatalog);
+    });
+    loadStores().then((loadedStores) => {
+      if (!active) return;
+      if (!inventoryFeatureEnabled) return;
+      setStores(loadedStores);
+      setSelectedStoreIds((current) => current.length ? current : defaultStoreSelection(loadedStores));
     });
     return () => {
       active = false;
@@ -60,6 +81,24 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
       active = false;
     };
   }, [compareSegment, segment, skuList]);
+
+  useEffect(() => {
+    let active = true;
+    const knownSkus = new Set(catalog.map((product) => product.sku));
+    const missingSkus = skuList.split("|").filter(Boolean).filter((sku) => !knownSkus.has(sku));
+
+    if (!missingSkus.length) return () => {
+      active = false;
+    };
+
+    loadProductsBySkus(missingSkus).then((products) => {
+      if (active) mergeCatalogProducts(products);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [catalog, mergeCatalogProducts, skuList]);
 
   function updateItem(index: number, item: Partial<QuoteItem>) {
     setItems((current) => current.map((row, rowIndex) => (rowIndex === index ? { ...row, ...item } : row)));
@@ -87,6 +126,48 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
     window.requestAnimationFrame(() => {
       isSyncingScroll.current = false;
     });
+  }
+
+  async function handleGeneratePdf() {
+    if (issuingPdf) return;
+    if (!quote.lines.length) {
+      setQuoteFeedback({ tone: "warning", message: "Agregue al menos un SKU antes de generar el PDF." });
+      return;
+    }
+
+    setIssuingPdf(true);
+    setQuoteFeedback({ tone: "info", message: "Emitiendo cotizacion y reservando consecutivo..." });
+
+    const issued = await issueQuote(quote, {
+      customer,
+      segment,
+      comparedSegment: compareSegment,
+    });
+
+    if (!issued.ok) {
+      setQuoteFeedback({ tone: "warning", message: issued.message });
+      setIssuingPdf(false);
+      return;
+    }
+
+    try {
+      const generatedBy = issued.quote.generatedByName || profile?.fullName || profile?.email || "Usuario COMASA";
+      await exportQuotePdf(quote, {
+        customer,
+        generatedAt: issued.quote.createdAt,
+        generatedBy,
+        quoteCode: issued.quote.quoteCode,
+        segment,
+      });
+      setQuoteFeedback({ tone: "success", message: `Cotizacion ${issued.quote.quoteCode} emitida y PDF generado.` });
+    } catch (error) {
+      setQuoteFeedback({
+        tone: "warning",
+        message: `Cotizacion ${issued.quote.quoteCode} emitida, pero no se pudo descargar el PDF: ${errorMessage(error)}`,
+      });
+    } finally {
+      setIssuingPdf(false);
+    }
   }
 
   return (
@@ -126,18 +207,13 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
                 <PackagePlus size={16} />
                 Agregar SKU
               </Button>
-              <Button
-                onClick={() => exportQuotePdf(quote, {
-                  customer,
-                  generatedBy: profile?.fullName || profile?.email,
-                  segment,
-                })}
-              >
+              <Button onClick={handleGeneratePdf} disabled={issuingPdf || !quote.lines.length}>
                 <Download size={16} />
-                PDF
+                {issuingPdf ? "Generando..." : "PDF"}
               </Button>
             </div>
           </div>
+          {quoteFeedback ? <AppFeedback tone={quoteFeedback.tone} message={quoteFeedback.message} /> : null}
           <div className="quote-parameters">
             <ReadOnlyField label="ID cliente" value={customer?.customerId} placeholder="Sin cliente" />
             <ReadOnlyField label="Nombre cliente" value={customer?.displayName} placeholder="Seleccione cliente" />
@@ -145,6 +221,9 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
             <ReadOnlyField label="Telefono" value={customer?.mobile} placeholder="Sin telefono" />
             <ReadOnlyField label="ID / Cedula" value={customer?.nationalId} placeholder="Sin ID" />
             <ReadOnlyField label="Segmento base" value={segment ? `Segmento ${segment}` : undefined} placeholder="Desde cliente" />
+            {inventoryFeatureEnabled ? (
+              <ReadOnlyField label="Filtro inventario" value={inventoryFilterLabel(requireStock, selectedStoreIds, stores)} placeholder="Todo el catalogo" />
+            ) : null}
             <label className="filter-field">
               <span>Segmento a comparar</span>
               <select value={compareSegment} onChange={(event) => setCompareSegment(event.target.value)}>
@@ -185,6 +264,13 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
         <SkuSearchModal
           catalog={catalog}
           segment={segment}
+          inventoryEnabled={inventoryFeatureEnabled}
+          stores={stores}
+          selectedStoreIds={selectedStoreIds}
+          requireStock={requireStock}
+          onStoreSelectionChange={setSelectedStoreIds}
+          onRequireStockChange={setRequireStock}
+          onCatalogProductsFound={mergeCatalogProducts}
           onClose={() => setSkuModalOpen(false)}
           onAddItems={(newItems) => setItems((current) => [...current, ...newItems])}
         />
@@ -199,6 +285,25 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
       {customerModalOpen ? <CustomerSearchModal onClose={() => setCustomerModalOpen(false)} onSelect={selectCustomer} /> : null}
     </div>
   );
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "error inesperado";
+}
+
+function defaultStoreSelection(stores: StoreLocation[]) {
+  const cedi = stores.find((store) => store.id === "1041");
+  if (cedi) return [cedi.id];
+  return ["1041"];
+}
+
+function inventoryFilterLabel(requireStock: boolean, storeIds: string[], stores: StoreLocation[]) {
+  if (!requireStock) return "Todo el catalogo";
+  const names = storeIds
+    .map((id) => stores.find((store) => store.id === id)?.name ?? `Tienda ${id}`)
+    .slice(0, 2);
+  const suffix = storeIds.length > 2 ? ` +${storeIds.length - 2}` : "";
+  return names.length ? `${names.join(", ")}${suffix}` : "Todas las tiendas";
 }
 
 function ReadOnlyField({

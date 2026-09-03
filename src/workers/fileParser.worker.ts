@@ -1,7 +1,7 @@
 import { readSheet } from "read-excel-file/web-worker";
-import type { Customer, ImportedPromotionRow, OfferType, QuoteItem } from "../types/domain";
+import type { Customer, ImportedPromotionRow, InventoryRecord, OfferType, Product, QuoteItem, StoreLocation } from "../types/domain";
 
-type ParseMode = "inspect" | "quote" | "promotion" | "customer";
+type ParseMode = "inspect" | "quote" | "promotion" | "customer" | "catalog" | "inventory" | "store";
 
 function normalizeHeader(value: unknown) {
   return String(value ?? "")
@@ -28,6 +28,7 @@ function tableToObjects(table: unknown[][]) {
   return body.map((row) =>
     row.reduce<Record<string, unknown>>((acc, value, index) => {
       acc[String(cleanHeaders[index] ?? index)] = value ?? "";
+      acc[String(index)] = value ?? "";
       return acc;
     }, {}),
   );
@@ -43,7 +44,7 @@ function findHeaderIndex(table: unknown[][]) {
   return index >= 0 ? index : 0;
 }
 
-function parseDelimited(text: string, delimiter: "," | "\t") {
+function parseDelimited(text: string, delimiter: "," | ";" | "\t") {
   const rows = text
     .split(/\r?\n/)
     .filter(Boolean)
@@ -54,10 +55,31 @@ function parseDelimited(text: string, delimiter: "," | "\t") {
 async function rowsFromFile(file: File) {
   const extension = file.name.split(".").pop()?.toLowerCase();
   if (extension === "csv" || extension === "tsv") {
-    return parseDelimited(await file.text(), extension === "tsv" ? "\t" : ",");
+    const text = await file.text();
+    return parseDelimited(text, extension === "tsv" ? "\t" : detectDelimiter(text));
   }
 
-  return tableToObjects(await readSheet(file));
+  return tableToObjects(normalizeWorkbookRows(await readSheet(file) as unknown));
+}
+
+function normalizeWorkbookRows(data: unknown): unknown[][] {
+  if (Array.isArray(data) && data.length === 1 && hasSheetData(data[0])) return data[0].data;
+  if (Array.isArray(data) && hasSheetData(data[0])) {
+    const firstSheet = data.find(hasSheetData) ?? data[0];
+    return firstSheet.data;
+  }
+  return Array.isArray(data) ? data as unknown[][] : [];
+}
+
+function hasSheetData(value: unknown): value is { data: unknown[][] } {
+  return Boolean(value && typeof value === "object" && Array.isArray((value as { data?: unknown }).data));
+}
+
+function detectDelimiter(text: string): "," | ";" {
+  const firstLine = text.split(/\r?\n/)[0] ?? "";
+  const semicolons = (firstLine.match(/;/g) ?? []).length;
+  const commas = (firstLine.match(/,/g) ?? []).length;
+  return semicolons > commas ? ";" : ",";
 }
 
 function normalizeRow(row: Record<string, unknown>) {
@@ -161,6 +183,78 @@ function parseCustomerRows(rows: Record<string, unknown>[]): Customer[] {
   );
 }
 
+function parseCatalogRows(rows: Record<string, unknown>[]): Product[] {
+  return deduplicateProducts(
+    rows
+      .map((row) => {
+        const data = normalizeRow(row);
+        const sku = String(pick(data, ["item", "sku", "articulo"]) ?? data[0] ?? "").trim();
+        const description = String(pick(data, ["item_desc", "descripcion", "description"]) ?? data[3] ?? "").trim();
+        const unitOfMeasure = String(pick(data, ["standard_uom", "unidad de medida", "uom"]) ?? data[7] ?? "").trim();
+        const listPrice = toNumber(pick(data, ["unit_retail", "precio de lista", "list_price"]) ?? data[12]) ?? 0;
+        const partNumber = String(pick(data, ["vpn", "numero de parte", "part_number"]) ?? data[14] ?? "").trim();
+        const legacyNumber = String(pick(data, ["legacy_number"]) ?? data[1] ?? "").trim();
+        const maxDiscount = toNumber(pick(data, ["tienda_desc_max"]) ?? data[27]);
+        const taxableValue = String(pick(data, ["aplica_impuesto"]) ?? data[26] ?? "S").trim().toUpperCase();
+
+        return {
+          sku,
+          legacyNumber: legacyNumber || undefined,
+          description,
+          unitOfMeasure: unitOfMeasure || undefined,
+          listPrice,
+          partNumber: partNumber || undefined,
+          maxDiscount,
+          taxable: taxableValue !== "N",
+        };
+      })
+      .filter((product) => product.sku && product.description && product.listPrice > 0),
+  );
+}
+
+function parseInventoryRows(rows: Record<string, unknown>[]): InventoryRecord[] {
+  return deduplicateInventory(
+    rows
+      .map((row) => {
+        const data = normalizeRow(row);
+        return {
+          storeId: String(pick(data, ["loc", "id de tienda", "store_id", "tienda"]) ?? data[0] ?? "").trim(),
+          sku: String(pick(data, ["item1", "item", "sku", "articulo"]) ?? data[4] ?? "").trim(),
+          quantity: toNumber(pick(data, ["stock_on_hand", "inventario", "inventory", "existencia"]) ?? data[9]) ?? 0,
+        };
+      })
+      .filter((record) => record.storeId && record.sku),
+  );
+}
+
+function parseStoreRows(rows: Record<string, unknown>[]): StoreLocation[] {
+  return rows
+    .map((row) => {
+      const data = normalizeRow(row);
+      return {
+        id: String(pick(data, ["id tienda", "id", "store_id", "loc"]) ?? data[0] ?? "").trim(),
+        name: String(pick(data, ["nombre tienda", "nombre", "store_name", "name"]) ?? data[1] ?? "").trim(),
+      };
+    })
+    .filter((store) => store.id && store.name);
+}
+
+function deduplicateProducts(products: Product[]) {
+  const grouped = new Map<string, Product>();
+  products.forEach((product) => grouped.set(product.sku, product));
+  return [...grouped.values()];
+}
+
+function deduplicateInventory(records: InventoryRecord[]) {
+  const grouped = new Map<string, InventoryRecord>();
+  records.forEach((record) => {
+    const key = `${record.storeId}|${record.sku}`;
+    const current = grouped.get(key);
+    grouped.set(key, current ? { ...record, quantity: current.quantity + record.quantity } : record);
+  });
+  return [...grouped.values()];
+}
+
 function deduplicateCustomers(customers: Customer[]) {
   const grouped = new Map<string, Customer>();
 
@@ -201,7 +295,13 @@ self.onmessage = async (event: MessageEvent<{ id: string; file: File; mode: Pars
           ? parseQuoteRows(rows)
           : mode === "customer"
             ? parseCustomerRows(rows)
-            : parsePromotionRows(rows);
+            : mode === "catalog"
+              ? parseCatalogRows(rows)
+              : mode === "inventory"
+                ? parseInventoryRows(rows)
+                : mode === "store"
+                  ? parseStoreRows(rows)
+                  : parsePromotionRows(rows);
 
     self.postMessage({ id, ok: true, result });
   } catch (error) {

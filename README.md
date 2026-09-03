@@ -15,9 +15,19 @@ Aplicacion web para administrar promociones de tienda 5 COMASA y calcular cotiza
 
 1. Copiar `.env.example` a `.env.local`.
 2. Completar `VITE_SUPABASE_URL` y `VITE_SUPABASE_PUBLISHABLE_KEY`.
-3. Configurar `VITE_CATALOG_TSV_URL` si se desea usar un origen distinto al TSV publicado del catalogo.
+3. Configurar `VITE_CATALOG_TSV_URL` solo como respaldo temporal del catalogo.
 4. Ejecutar `supabase/schema.sql` en el SQL Editor del proyecto Supabase.
 5. Instalar dependencias y ejecutar la aplicacion.
+
+## Carga operativa desde Administracion
+
+El centro de carga permite actualizar datos por proceso. Clientes, catalogo, inventario y tiendas usan reemplazo total: cada sincronizacion elimina la data anterior de esa tabla y publica la data nueva cargada desde el archivo.
+
+- Promociones: archivo comercial de ofertas.
+- Clientes: reporte de clientes para busqueda y segmento base.
+- Catalogo: SKU, descripcion, unidad de medida, precio de lista y numero de parte.
+- Inventario: tienda, SKU y existencia.
+- Tiendas: ID y nombre de tienda para filtros del cotizador.
 
 ## Carga de clientes
 
@@ -37,6 +47,7 @@ El script reemplaza totalmente la tabla `customers`: primero elimina los cliente
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_PUBLISHABLE_KEY`
 - `VITE_CATALOG_TSV_URL`
+- `VITE_ENABLE_INVENTORY`: opcional. Usar `true` solo para reactivar filtros y carga de inventario.
 
 ## Roles
 

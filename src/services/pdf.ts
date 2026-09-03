@@ -6,6 +6,8 @@ type ExportQuotePdfOptions = {
   segment: string;
   customer?: Customer | null;
   generatedBy?: string;
+  generatedAt?: string | Date;
+  quoteCode?: string;
 };
 
 export async function exportQuotePdf(summary: QuoteSummary, options: ExportQuotePdfOptions) {
@@ -14,7 +16,7 @@ export async function exportQuotePdf(summary: QuoteSummary, options: ExportQuote
   const page = { width: 612, height: 792 };
   const margin = 38;
   const contentWidth = page.width - margin * 2;
-  const generatedAt = new Date();
+  const generatedAt = options.generatedAt ? new Date(options.generatedAt) : new Date();
   const logoData = await imageToDataUrl(comasaLogo).catch(() => "");
   const productImages = await Promise.all(
     summary.lines.map((line) =>
@@ -67,7 +69,7 @@ export async function exportQuotePdf(summary: QuoteSummary, options: ExportQuote
   drawTotals(doc, summary, margin, y, contentWidth);
   drawWarning(doc, margin, page.height - 82, contentWidth);
   drawFooters(doc, page, margin);
-  doc.save(`cotizacion-comasa-${Date.now()}.pdf`);
+  doc.save(`${safeFileName(options.quoteCode || `cotizacion-comasa-${Date.now()}`)}.pdf`);
 }
 
 function drawHeader(
@@ -101,6 +103,7 @@ function drawHeader(
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
   doc.setTextColor(71, 85, 105);
+  doc.text(`No: ${options.quoteCode || "Pendiente"}`, margin + contentWidth - 150, 19);
   doc.text(`Fecha: ${formatDate(generatedAt)}`, margin + contentWidth - 150, 34);
   doc.text(`Generado por: ${options.generatedBy || "Usuario COMASA"}`, margin + contentWidth - 150, 49);
   doc.text(`Segmento: ${options.segment || "Sin segmento"}`, margin + contentWidth - 150, 64);
@@ -343,6 +346,15 @@ function imageFormat(dataUrl: string) {
 
 function productPdfImageUrl(sku: string) {
   return `/api/product-image?sku=${encodeURIComponent(sku)}`;
+}
+
+function safeFileName(value: string) {
+  return value
+    .trim()
+    .replace(/[^A-Za-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .toLowerCase();
 }
 
 function validityLabel(startsAt?: string, endsAt?: string) {
