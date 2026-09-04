@@ -122,6 +122,42 @@ export type QuoteSummary = {
   lines: QuoteLine[];
 };
 
+export type AdminQuoteLine = {
+  lineNumber: number;
+  sku: string;
+  quantity: number;
+  listPrice: number;
+  listTotal: number;
+  finalTotal: number;
+  savings: number;
+  productDescription?: string;
+  appliedOfferId?: string;
+  appliedPromotionId?: string;
+  appliedPromotionName?: string;
+};
+
+export type AdminQuote = {
+  id: string;
+  quoteCode?: string;
+  quoteNumber?: number;
+  customerId?: string;
+  customerName?: string;
+  customerPhone?: string;
+  customerNationalId?: string;
+  originalSegment: string;
+  comparedSegment?: string;
+  subtotalList: number;
+  subtotalFinal: number;
+  tax: number;
+  totalWithTax: number;
+  savings: number;
+  createdBy?: string;
+  generatedByName?: string;
+  generatedByEmail?: string;
+  createdAt: string;
+  lines: AdminQuoteLine[];
+};
+
 export type ImportedPromotionRow = {
   offerId: string;
   promotionId: string;

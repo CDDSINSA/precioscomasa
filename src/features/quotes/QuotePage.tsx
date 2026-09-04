@@ -418,7 +418,7 @@ function QuoteTable({
                   </td>
                   <td>{formatCurrency(line.unitPrice)}</td>
                   <td><strong>{formatCurrency(line.finalTotal)}</strong></td>
-                  <td><button className="icon-btn" title="Eliminar línea" onClick={() => onRemove(index)}><Trash2 size={16} /></button></td>
+                  <td><button className="icon-btn danger" title="Eliminar línea" onClick={() => onRemove(index)}><Trash2 size={16} /></button></td>
                 </tr>
               ))}
               {!quote.lines.length ? (

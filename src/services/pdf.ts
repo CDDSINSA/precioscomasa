@@ -247,10 +247,9 @@ function drawTotals(
   const x = margin + contentWidth - boxWidth;
   doc.setFillColor(255, 255, 255);
   doc.setDrawColor(203, 213, 225);
-  doc.roundedRect(x, y, boxWidth, 86, 8, 8, "FD");
+  doc.roundedRect(x, y, boxWidth, 68, 8, 8, "FD");
 
   const rows = [
-    ["Subtotal lista", formatCurrency(summary.subtotalList)],
     ["Subtotal final", formatCurrency(summary.subtotalFinal)],
     ["IVA", formatCurrency(summary.tax)],
   ];
@@ -267,12 +266,12 @@ function drawTotals(
   });
 
   doc.setFillColor(0, 91, 170);
-  doc.roundedRect(x + 10, y + 60, boxWidth - 20, 18, 5, 5, "F");
+  doc.roundedRect(x + 10, y + 42, boxWidth - 20, 18, 5, 5, "F");
   doc.setFont("helvetica", "bold");
   doc.setFontSize(9);
   doc.setTextColor(255, 255, 255);
-  doc.text("Total con IVA", x + 18, y + 73);
-  doc.text(formatCurrency(summary.totalWithTax), x + boxWidth - 18, y + 73, { align: "right" });
+  doc.text("Total con IVA", x + 18, y + 55);
+  doc.text(formatCurrency(summary.totalWithTax), x + boxWidth - 18, y + 55, { align: "right" });
 }
 
 function drawWarning(

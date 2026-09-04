@@ -1,4 +1,4 @@
-import { ClipboardList, Home, Settings2, type LucideIcon } from "lucide-react";
+import { ClipboardList, Home, ReceiptText, Settings2, type LucideIcon } from "lucide-react";
 import type { AppRole } from "../types/domain";
 
 export type NavItem = {
@@ -20,6 +20,12 @@ export const navigation: NavItem[] = [
     path: "/administracion",
     label: "Administración",
     icon: Settings2,
+    roles: ["admin"],
+  },
+  {
+    path: "/cotizaciones",
+    label: "Gestión de cotizaciones",
+    icon: ReceiptText,
     roles: ["admin"],
   },
   {

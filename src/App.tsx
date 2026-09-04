@@ -10,6 +10,7 @@ import {
 } from "./services/auth";
 import { AccessPendingPage, AuthPage, PasswordRecoveryPage } from "./features/auth/AuthPage";
 import { AdminPage } from "./features/admin/AdminPage";
+import { AdminQuotesPage } from "./features/adminQuotes/AdminQuotesPage";
 import { HomePage } from "./features/home/HomePage";
 import { QuotePage } from "./features/quotes/QuotePage";
 import { navigation } from "./constants/navigation";
@@ -29,6 +30,7 @@ export default function App() {
   const page =
     safePath === "/" ? <HomePage /> :
     safePath === "/administracion" ? <AdminPage /> :
+    safePath === "/cotizaciones" ? <AdminQuotesPage /> :
     <QuotePage profile={profile ?? undefined} />;
 
   useEffect(() => {

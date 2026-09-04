@@ -1,4 +1,4 @@
-import { ClipboardList, Settings2 } from "lucide-react";
+import { ClipboardList, ReceiptText, Settings2 } from "lucide-react";
 import { Button, Card, CardContent } from "../../components/ui";
 import comasaLogo from "../../assets/logo-comasa.png";
 
@@ -37,6 +37,20 @@ export function HomePage() {
         <Card className="access-card">
           <CardContent>
             <div className="access-icon cyan">
+              <ReceiptText size={28} />
+            </div>
+            <h2>Gestión de cotizaciones</h2>
+            <p>Consulta de cotizaciones emitidas por cliente, usuario y segmento.</p>
+            <Button onClick={() => open("/cotizaciones")}>
+              <ReceiptText size={17} />
+              Gestionar
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card className="access-card">
+          <CardContent>
+            <div className="access-icon">
               <ClipboardList size={28} />
             </div>
             <h2>Cotización</h2>
