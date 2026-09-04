@@ -329,6 +329,7 @@ tbody tr:hover { background: var(--color-primary-soft); }
 
 .feedback.success { color: var(--color-success-text); background: var(--color-success-bg); }
 .feedback.info { color: #075985; background: #e0f2fe; }
+.feedback.warning { color: var(--color-warning-text); background: var(--color-warning-bg); }
 
 .load-center > div { padding: 0; }
 .load-shell {
@@ -450,6 +451,42 @@ tbody tr:hover { background: var(--color-primary-soft); }
 
 .preview-head h3 { font-size: .95rem; }
 .preview-frame .table-wrap { max-height: 27rem; }
+.settings-table { min-width: 1120px; }
+.settings-table td > span,
+.settings-table td > small {
+  display: block;
+  max-width: 14rem;
+  overflow: hidden;
+  color: var(--color-muted);
+  font-size: .72rem;
+  line-height: 1rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-table td input[type="number"] {
+  width: 5.5rem;
+}
+
+.inline-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: .45rem;
+  min-height: 2.25rem;
+}
+
+.inline-toggle input {
+  width: 1rem;
+  min-height: 1rem;
+  padding: 0;
+  accent-color: var(--color-primary);
+}
+
+.inline-toggle span {
+  color: var(--color-heading);
+  font-size: .8rem;
+  font-weight: 650;
+}
 .reference-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -640,6 +677,12 @@ tbody tr:hover { background: var(--color-primary-soft); }
   margin-bottom: 1rem;
 }
 
+.auth-logo {
+  width: 8.5rem;
+  height: 2.75rem;
+  object-fit: contain;
+}
+
 .auth-head h1 {
   margin: 0;
   color: var(--color-heading);
@@ -706,7 +749,7 @@ tbody tr:hover { background: var(--color-primary-soft); }
     left: .75rem;
     z-index: 30;
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(4.5rem, 1fr));
     gap: .35rem;
     padding: .45rem;
     border: 1px solid var(--color-border);

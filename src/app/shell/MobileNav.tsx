@@ -1,13 +1,16 @@
+import { LogOut } from "lucide-react";
 import type { NavItem } from "../../constants/navigation";
 
 export function MobileNav({
   currentPath,
   items,
   onNavigate,
+  onSignOut,
 }: {
   currentPath: string;
   items: NavItem[];
   onNavigate: (path: string) => void;
+  onSignOut: () => void;
 }) {
   return (
     <nav className="mobile-nav">
@@ -24,6 +27,10 @@ export function MobileNav({
           </button>
         );
       })}
+      <button onClick={onSignOut}>
+        <LogOut size={19} />
+        <span>Salir</span>
+      </button>
     </nav>
   );
 }

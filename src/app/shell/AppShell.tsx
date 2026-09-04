@@ -34,7 +34,7 @@ export function AppShell({
             <strong>COMASA</strong>
             <span>Cotizador comercial</span>
           </div>
-          <button className="icon-btn" title="Contraer menu" onClick={() => setCollapsed(!collapsed)}>
+          <button className="icon-btn" title="Contraer menú" onClick={() => setCollapsed(!collapsed)}>
             {collapsed ? <ChevronRight size={17} /> : <ChevronLeft size={17} />}
           </button>
         </div>
@@ -63,14 +63,14 @@ export function AppShell({
         </nav>
         <button className="logout-btn" onClick={signOut}>
           <LogOut size={17} />
-          <span>Cerrar sesion</span>
+          <span>Cerrar sesión</span>
         </button>
       </aside>
       <main>
         <SystemStatusIndicator />
         {children}
       </main>
-      <MobileNav currentPath={currentPath} items={allowed.slice(0, 4)} onNavigate={navigate} />
+      <MobileNav currentPath={currentPath} items={allowed.slice(0, 4)} onNavigate={navigate} onSignOut={signOut} />
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { FormEvent, useState } from "react";
 import { AppFeedback } from "../../components/AppFeedback";
 import { Button, Card, CardContent } from "../../components/ui";
 import { requestPasswordReset, signIn, signOut, updatePassword } from "../../services/auth";
+import comasaLogo from "../../assets/logo-comasa.png";
 
 export function AuthPage() {
   const [email, setEmail] = useState("");
@@ -31,7 +32,7 @@ export function AuthPage() {
       <Card className="auth-card">
         <CardContent>
           <div className="auth-head">
-            <div className="brand-mark">C</div>
+            <img className="auth-logo" src={comasaLogo} alt="COMASA" />
             <h1>COMASA</h1>
             <p>Acceso al cotizador comercial.</p>
           </div>
@@ -49,7 +50,7 @@ export function AuthPage() {
               <LogIn size={16} />
               Ingresar
             </Button>
-            <button className="auth-link" disabled={resetting} type="button" onClick={handlePasswordReset}>
+            <button className="auth-link" disabled={resetting || !email.trim()} type="button" onClick={handlePasswordReset}>
               Restablecer clave
             </button>
           </form>
@@ -65,11 +66,11 @@ export function AccessPendingPage({ onSignOut }: { onSignOut: () => void }) {
       <Card className="auth-card">
         <CardContent>
           <div className="auth-head">
-            <div className="brand-mark">C</div>
+            <img className="auth-logo" src={comasaLogo} alt="COMASA" />
             <h1>Perfil pendiente</h1>
-            <p>Ejecute nuevamente el script SQL y vuelva a ingresar. Si persiste, revise `app_profiles`.</p>
+            <p>Tu perfil aún no está autorizado. Contacta al administrador para activar el acceso.</p>
           </div>
-          <Button variant="outline" onClick={onSignOut}>Cerrar sesion</Button>
+          <Button variant="outline" onClick={onSignOut}>Cerrar sesión</Button>
         </CardContent>
       </Card>
     </div>
@@ -106,7 +107,7 @@ export function PasswordRecoveryPage({ onDone }: { onDone: () => void }) {
       <Card className="auth-card">
         <CardContent>
           <div className="auth-head">
-            <div className="brand-mark">C</div>
+            <img className="auth-logo" src={comasaLogo} alt="COMASA" />
             <h1>Nueva clave</h1>
             <p>Defina una clave para volver a ingresar al cotizador.</p>
           </div>

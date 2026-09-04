@@ -60,7 +60,7 @@ export function ImportQuoteModal({ onClose, onReplaceItems, onAppendItems }: Pro
         <header className="modal-head">
           <div>
             <h2>Importar SKU</h2>
-            <span>Seleccione una fuente para actualizar la cotizacion.</span>
+            <span>Seleccione una fuente para actualizar la cotización.</span>
           </div>
           <button className="icon-btn" title="Cerrar" onClick={onClose}>
             <X size={17} />

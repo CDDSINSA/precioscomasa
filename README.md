@@ -19,6 +19,8 @@ Aplicacion web para administrar promociones de tienda 5 COMASA y calcular cotiza
 4. Ejecutar `supabase/schema.sql` en el SQL Editor del proyecto Supabase.
 5. Instalar dependencias y ejecutar la aplicacion.
 
+Para una base de Supabase existente, si la actualizacion de catalogo falla por `statement timeout`, ejecutar `supabase/catalog_sync.sql` en el SQL Editor. Si la actualizacion de inventario falla por `statement timeout`, ejecutar `supabase/inventory_sync.sql`. Esos scripts crean las funciones usadas por la app para limpiar datos sin borrar fila por fila desde el navegador.
+
 ## Carga operativa desde Administracion
 
 El centro de carga permite actualizar datos por proceso. Clientes, catalogo, inventario y tiendas usan reemplazo total: cada sincronizacion elimina la data anterior de esa tabla y publica la data nueva cargada desde el archivo.
@@ -26,8 +28,8 @@ El centro de carga permite actualizar datos por proceso. Clientes, catalogo, inv
 - Promociones: archivo comercial de ofertas.
 - Clientes: reporte de clientes para busqueda y segmento base.
 - Catalogo: SKU, descripcion, unidad de medida, precio de lista y numero de parte.
-- Inventario: tienda, SKU y existencia.
-- Tiendas: ID y nombre de tienda para filtros del cotizador.
+- Inventario: tienda, SKU y existencia. La sincronizacion publica solo registros de tienda 1041.
+- Tiendas: ID y nombre de tienda como soporte interno del inventario.
 
 ## Carga de clientes
 
@@ -47,7 +49,7 @@ El script reemplaza totalmente la tabla `customers`: primero elimina los cliente
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_PUBLISHABLE_KEY`
 - `VITE_CATALOG_TSV_URL`
-- `VITE_ENABLE_INVENTORY`: opcional. Usar `true` solo para reactivar filtros y carga de inventario.
+- `VITE_ENABLE_INVENTORY`: opcional. El inventario queda activo por defecto; usar `false` solo si se necesita ocultar carga y lectura de inventario.
 
 ## Roles
 

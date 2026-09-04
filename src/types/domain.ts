@@ -13,6 +13,8 @@ export type OfferType =
   | "FIXED_QTY_PRICE"
   | "KIT_OFFER";
 
+export type ThresholdType = "EXACT" | "MINIMUM";
+
 export type Product = {
   sku: string;
   legacyNumber?: string;
@@ -20,8 +22,16 @@ export type Product = {
   unitOfMeasure?: string;
   listPrice: number;
   partNumber?: string;
+  departmentId?: string;
   maxDiscount?: number;
   taxable: boolean;
+};
+
+export type ProductDepartment = {
+  departmentId: string;
+  departmentName: string;
+  divisionId: string;
+  divisionName: string;
 };
 
 export type StoreLocation = {
@@ -58,6 +68,7 @@ export type Promotion = {
 
 export type OfferRule = {
   id: string;
+  ruleId?: string;
   promotionId: string;
   promotionName: string;
   startsAt?: string;
@@ -68,6 +79,9 @@ export type OfferRule = {
   discountPercent?: number;
   fixedPrice?: number;
   minQuantity?: number;
+  thresholdQuantity?: number;
+  thresholdType?: ThresholdType;
+  allowStacking?: boolean;
   discountType?: string;
   configurationNote?: string;
 };

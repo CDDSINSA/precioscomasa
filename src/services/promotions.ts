@@ -50,6 +50,9 @@ export const sampleOfferRules: OfferRule[] = [
     type: "LINE_ITEM_DISCOUNT",
     sku: "140862737",
     segment: " - ",
+    thresholdQuantity: 1,
+    thresholdType: "EXACT",
+    allowStacking: false,
     discountPercent: 80,
   },
   {
@@ -62,6 +65,9 @@ export const sampleOfferRules: OfferRule[] = [
     sku: "100634895",
     segment: "1003",
     minQuantity: 8,
+    thresholdQuantity: 8,
+    thresholdType: "MINIMUM",
+    allowStacking: false,
     discountPercent: 10,
   },
   {
@@ -74,6 +80,9 @@ export const sampleOfferRules: OfferRule[] = [
     sku: "100634895",
     segment: "1002",
     minQuantity: 8,
+    thresholdQuantity: 8,
+    thresholdType: "MINIMUM",
+    allowStacking: false,
     discountPercent: 15,
   },
   {
@@ -85,6 +94,9 @@ export const sampleOfferRules: OfferRule[] = [
     type: "FIXED_QTY_PRICE",
     sku: "152281753",
     segment: "1002",
+    thresholdQuantity: 1,
+    thresholdType: "EXACT",
+    allowStacking: false,
     fixedPrice: 9600,
   },
   {
@@ -97,6 +109,9 @@ export const sampleOfferRules: OfferRule[] = [
     sku: "100535125",
     segment: "1003",
     minQuantity: 1,
+    thresholdQuantity: 1,
+    thresholdType: "EXACT",
+    allowStacking: false,
     discountPercent: 8,
     discountType: "PERCENT_OFF",
     configurationNote: "Elemento 1 de kit",
@@ -111,6 +126,9 @@ export const sampleOfferRules: OfferRule[] = [
     sku: "145617861",
     segment: "1003",
     minQuantity: 1,
+    thresholdQuantity: 1,
+    thresholdType: "EXACT",
+    allowStacking: false,
     fixedPrice: 390,
     discountType: "PRICE_OVERRIDE",
     configurationNote: "Elemento 2 de kit",
@@ -125,6 +143,9 @@ export const sampleOfferRules: OfferRule[] = [
     sku: "100634895",
     segment: "1003",
     minQuantity: 1,
+    thresholdQuantity: 1,
+    thresholdType: "EXACT",
+    allowStacking: false,
     discountPercent: 5,
     discountType: "PERCENT_OFF",
     configurationNote: "Elemento 3 de kit",
@@ -138,7 +159,7 @@ export function classifyPromotion(row: Pick<ImportedPromotionRow, "segment">) {
 export function eligibleRules(rules: OfferRule[], sku: string, segment: string, quantity: number) {
   return rules.filter((rule) => {
     const segmentMatches = ruleAppliesToSegment(rule, segment);
-    const quantityMatches = !rule.minQuantity || quantity >= rule.minQuantity;
+    const quantityMatches = ruleMatchesQuantity(rule, quantity);
     const kitSupported = rule.type !== "KIT_OFFER" || getKitRules(rules, rule, segment).length < 4;
     return rule.sku === sku && segmentMatches && quantityMatches && kitSupported;
   });
@@ -216,6 +237,12 @@ export function findBestRule(rules: OfferRule[], sku: string, segment: string, q
 
 export function ruleAppliesToSegment(rule: Pick<OfferRule, "segment">, segment: string) {
   return rule.segment === segment || rule.segment.trim() === "-";
+}
+
+function ruleMatchesQuantity(rule: OfferRule, quantity: number) {
+  const thresholdQuantity = rule.thresholdQuantity ?? rule.minQuantity ?? 1;
+  const thresholdType = rule.thresholdType ?? "EXACT";
+  return thresholdType === "MINIMUM" ? quantity >= thresholdQuantity : quantity === thresholdQuantity;
 }
 
 function getKitRules(rules: OfferRule[], offer: OfferRule, segment: string) {

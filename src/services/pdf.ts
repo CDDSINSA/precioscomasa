@@ -2,6 +2,8 @@ import comasaLogo from "../assets/logo-comasa.png";
 import type { Customer, QuoteSummary } from "../types/domain";
 import { formatCurrency } from "./quote";
 
+const printProductImagesInPdf = false;
+
 type ExportQuotePdfOptions = {
   segment: string;
   customer?: Customer | null;
@@ -18,13 +20,15 @@ export async function exportQuotePdf(summary: QuoteSummary, options: ExportQuote
   const contentWidth = page.width - margin * 2;
   const generatedAt = options.generatedAt ? new Date(options.generatedAt) : new Date();
   const logoData = await imageToDataUrl(comasaLogo).catch(() => "");
-  const productImages = await Promise.all(
-    summary.lines.map((line) =>
-      imageToDataUrl(productPdfImageUrl(line.sku)).catch(() =>
-        imageToDataUrl(line.imageUrl).catch(() => ""),
+  const productImages = printProductImagesInPdf
+    ? await Promise.all(
+      summary.lines.map((line) =>
+        imageToDataUrl(productPdfImageUrl(line.sku)).catch(() =>
+          imageToDataUrl(line.imageUrl).catch(() => ""),
+        ),
       ),
-    ),
-  );
+    )
+    : [];
   let y = drawHeader(doc, logoData, options, generatedAt, margin, contentWidth);
 
   y = drawCustomerDetails(doc, options, margin, y, contentWidth);
@@ -56,7 +60,7 @@ export async function exportQuotePdf(summary: QuoteSummary, options: ExportQuote
     doc.setFont("helvetica", "normal");
     doc.setFontSize(9);
     doc.setTextColor(100, 116, 139);
-    doc.text("No hay SKU agregados a esta cotizacion.", margin + 14, y + 25);
+    doc.text("No hay SKU agregados a esta cotización.", margin + 14, y + 25);
     y += 42;
   }
 
@@ -69,7 +73,7 @@ export async function exportQuotePdf(summary: QuoteSummary, options: ExportQuote
   drawTotals(doc, summary, margin, y, contentWidth);
   drawWarning(doc, margin, page.height - 82, contentWidth);
   drawFooters(doc, page, margin);
-  doc.save(`${safeFileName(options.quoteCode || `cotizacion-comasa-${Date.now()}`)}.pdf`);
+  doc.save(`${safeFileName(options.quoteCode || `borrador-comasa-${Date.now()}`)}.pdf`);
 }
 
 function drawHeader(
@@ -98,15 +102,22 @@ function drawHeader(
   doc.setFont("helvetica", "bold");
   doc.setFontSize(compact ? 15 : 20);
   doc.setTextColor(30, 41, 59);
-  doc.text("Cotizacion Comercial", compact ? margin + 138 : margin, compact ? 46 : 82);
+  doc.text("Cotización Comercial", compact ? margin + 138 : margin, compact ? 46 : 82);
 
+  const headerMetaX = margin + contentWidth - 178;
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
   doc.setTextColor(71, 85, 105);
-  doc.text(`No: ${options.quoteCode || "Pendiente"}`, margin + contentWidth - 150, 19);
-  doc.text(`Fecha: ${formatDate(generatedAt)}`, margin + contentWidth - 150, 34);
-  doc.text(`Generado por: ${options.generatedBy || "Usuario COMASA"}`, margin + contentWidth - 150, 49);
-  doc.text(`Segmento: ${options.segment || "Sin segmento"}`, margin + contentWidth - 150, 64);
+  doc.text("Cotización:", headerMetaX, 20);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  doc.setTextColor(0, 91, 170);
+  doc.text(options.quoteCode || "Borrador", headerMetaX + 58, 20);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.setTextColor(71, 85, 105);
+  doc.text(`Fecha: ${formatDate(generatedAt)}`, headerMetaX, 38);
+  doc.text(`Generado por: ${options.generatedBy || "Usuario COMASA"}`, headerMetaX, 53);
 
   return compact ? 96 : 124;
 }
@@ -131,9 +142,9 @@ function drawCustomerDetails(
   const fields = [
     ["Cliente", customer?.displayName || "Sin cliente seleccionado"],
     ["ID cliente", customer?.customerId || "-"],
-    ["Telefono", customer?.mobile || "-"],
-    ["ID / Cedula", customer?.nationalId || "-"],
-    ["Direccion", customer?.address || "-"],
+    ["Teléfono", customer?.mobile || "-"],
+    ["ID / Cédula", customer?.nationalId || "-"],
+    ["Dirección", customer?.address || "-"],
   ];
   const leftX = margin + 14;
   const rightX = margin + contentWidth / 2 + 10;
@@ -158,11 +169,10 @@ function drawTableHead(
   doc.setFont("helvetica", "bold");
   doc.setFontSize(8);
   doc.setTextColor(255, 255, 255);
-  doc.text("IMG", margin + 12, y + 18);
-  doc.text("SKU", margin + 58, y + 18);
-  doc.text("Descripcion", margin + 126, y + 18);
+  doc.text("SKU", margin + 14, y + 18);
+  doc.text("Descripción", margin + 84, y + 18);
   doc.text("Cant.", margin + 320, y + 18);
-  doc.text("Promo / Vigencia", margin + 362, y + 18);
+  doc.text("Promoción", margin + 362, y + 18);
   doc.text("Total", margin + 480, y + 18);
   return y + 28;
 }
@@ -178,7 +188,7 @@ function drawSkuRow(
     summaryWidth,
     y,
   }: {
-    imageData: string;
+    imageData?: string;
     index: number;
     line: QuoteSummary["lines"][number];
     margin: number;
@@ -192,31 +202,23 @@ function drawSkuRow(
   doc.setDrawColor(226, 232, 240);
   doc.line(margin, y + rowHeight, margin + summaryWidth, y + rowHeight);
 
-  if (imageData) {
+  if (printProductImagesInPdf && imageData) {
     doc.addImage(imageData, imageFormat(imageData), margin + 10, y + 9, 38, 38);
-  } else {
-    doc.setFillColor(226, 232, 240);
-    doc.roundedRect(margin + 10, y + 9, 38, 38, 5, 5, "F");
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(7);
-    doc.setTextColor(100, 116, 139);
-    doc.text("SKU", margin + 21, y + 31);
   }
 
   const description = line.product?.description ?? "Producto no encontrado";
   const promo = line.appliedOffer;
   const promoName = promo ? `${promo.id} - ${promo.promotionName}` : "Sin oferta aplicada";
-  const promoDates = promo ? validityLabel(promo.startsAt, promo.endsAt) : "-";
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(8.5);
   doc.setTextColor(30, 41, 59);
-  doc.text(line.sku, margin + 58, y + 20);
+  doc.text(line.sku, margin + 14, y + 20);
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.5);
   doc.setTextColor(71, 85, 105);
-  doc.text(doc.splitTextToSize(description, 180).slice(0, 3), margin + 126, y + 16);
+  doc.text(doc.splitTextToSize(description, 220).slice(0, 3), margin + 84, y + 16);
 
   doc.setFont("helvetica", "bold");
   doc.setTextColor(30, 41, 59);
@@ -225,17 +227,11 @@ function drawSkuRow(
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7);
   doc.setTextColor(71, 85, 105);
-  doc.text(doc.splitTextToSize(promoName, 108).slice(0, 2), margin + 362, y + 16);
-  doc.setFont("helvetica", "bold");
-  doc.text(promoDates, margin + 362, y + 44);
+  doc.text(doc.splitTextToSize(promoName, 108).slice(0, 3), margin + 362, y + 16);
 
   doc.setFontSize(8);
   doc.setTextColor(30, 41, 59);
   doc.text(formatCurrency(line.finalTotal), margin + 480, y + 20, { maxWidth: 70 });
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(7);
-  doc.setTextColor(4, 120, 87);
-  doc.text(`Ahorro ${formatCurrency(line.savings)}`, margin + 480, y + 38, { maxWidth: 70 });
 
   return y + rowHeight;
 }
@@ -251,13 +247,12 @@ function drawTotals(
   const x = margin + contentWidth - boxWidth;
   doc.setFillColor(255, 255, 255);
   doc.setDrawColor(203, 213, 225);
-  doc.roundedRect(x, y, boxWidth, 104, 8, 8, "FD");
+  doc.roundedRect(x, y, boxWidth, 86, 8, 8, "FD");
 
   const rows = [
     ["Subtotal lista", formatCurrency(summary.subtotalList)],
     ["Subtotal final", formatCurrency(summary.subtotalFinal)],
     ["IVA", formatCurrency(summary.tax)],
-    ["Ahorro estimado", formatCurrency(summary.savings)],
   ];
 
   rows.forEach(([label, value], index) => {
@@ -272,12 +267,12 @@ function drawTotals(
   });
 
   doc.setFillColor(0, 91, 170);
-  doc.roundedRect(x + 10, y + 78, boxWidth - 20, 18, 5, 5, "F");
+  doc.roundedRect(x + 10, y + 60, boxWidth - 20, 18, 5, 5, "F");
   doc.setFont("helvetica", "bold");
   doc.setFontSize(9);
   doc.setTextColor(255, 255, 255);
-  doc.text("Total con IVA", x + 18, y + 91);
-  doc.text(formatCurrency(summary.totalWithTax), x + boxWidth - 18, y + 91, { align: "right" });
+  doc.text("Total con IVA", x + 18, y + 73);
+  doc.text(formatCurrency(summary.totalWithTax), x + boxWidth - 18, y + 73, { align: "right" });
 }
 
 function drawWarning(
@@ -287,7 +282,7 @@ function drawWarning(
   contentWidth: number,
 ) {
   const note =
-    "Este documento es una referencia aproximada de la oferta de Xstore, las ofertas pueden variar por logica, cantidad de SKU y unidades y/o fechas de vencimiento.";
+    "Este documento es una referencia aproximada de la oferta de Xstore; las ofertas pueden variar por lógica, cantidad de SKU, unidades y fechas de vencimiento.";
   doc.setFillColor(254, 243, 199);
   doc.setDrawColor(245, 158, 11);
   doc.roundedRect(margin, y, contentWidth, 38, 7, 7, "FD");
@@ -307,7 +302,7 @@ function drawFooters(doc: InstanceType<typeof import("jspdf").jsPDF>, page: { wi
     doc.setFontSize(7.5);
     doc.setTextColor(148, 163, 184);
     doc.text("COMASA - Cotizador Comercial", margin, page.height - 28);
-    doc.text(`Pagina ${currentPage} de ${totalPages}`, page.width - margin, page.height - 28, { align: "right" });
+    doc.text(`Página ${currentPage} de ${totalPages}`, page.width - margin, page.height - 28, { align: "right" });
   }
 }
 
@@ -355,11 +350,6 @@ function safeFileName(value: string) {
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "")
     .toLowerCase();
-}
-
-function validityLabel(startsAt?: string, endsAt?: string) {
-  if (!startsAt && !endsAt) return "Vigencia no indicada";
-  return `${startsAt ? formatDate(startsAt) : "Sin inicio"} - ${endsAt ? formatDate(endsAt) : "Sin vencimiento"}`;
 }
 
 function formatDate(value: Date | string) {

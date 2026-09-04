@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { inventoryFeatureEnabled } from "../config/features";
+import { inventoryFeatureEnabled, inventoryStoreId } from "../config/features";
 import type {
   Customer,
   ImportedPromotionRow,
@@ -7,11 +7,14 @@ import type {
   OfferRule,
   OfferType,
   Product,
+  ProductDepartment,
   ProductInventory,
   QuoteSummary,
   StoreLocation,
+  ThresholdType,
 } from "../types/domain";
 import { updateStoredDataStatus } from "./dataStatus";
+import { sampleOfferRules } from "./promotions";
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabasePublishableKey =
@@ -21,6 +24,11 @@ export const supabase =
   supabaseUrl && supabasePublishableKey ? createClient(supabaseUrl, supabasePublishableKey) : null;
 export const hasSupabaseConfig = Boolean(supabase);
 
+const productSelectColumns =
+  "sku,legacy_number,description,unit_of_measure,list_price,part_number,department_id,max_discount,taxable";
+const legacyProductSelectColumns =
+  "sku,legacy_number,description,unit_of_measure,list_price,part_number,max_discount,taxable";
+
 export type PromotionSyncMode = "full" | "partial";
 export type RemoteDataMetrics = {
   promotions: number | null;
@@ -28,6 +36,19 @@ export type RemoteDataMetrics = {
   catalog: number | null;
   inventory: number | null;
   stores: number | null;
+};
+export type ProductSearchPage = {
+  products: Product[];
+  hasMore: boolean;
+  inventory?: Map<string, ProductInventory>;
+};
+
+type ProductSearchOptions = {
+  limit?: number;
+  offset?: number;
+  prioritizeInventory?: boolean;
+  divisionId?: string;
+  storeId?: string;
 };
 
 type SyncProgressCallback = (sent: number, total: number, detail?: string) => void;
@@ -53,6 +74,9 @@ type PromotionRuleRow = {
   discount_percent: number | null;
   discount_type: string | null;
   configuration_note: string | null;
+  allow_stacking: boolean | null;
+  threshold_quantity: number | null;
+  threshold_type: ThresholdType | string | null;
 };
 
 type PromotionRow = {
@@ -81,8 +105,13 @@ type ProductRow = {
   unit_of_measure: string | null;
   list_price: number | string | null;
   part_number: string | null;
+  department_id: string | null;
   max_discount: number | string | null;
   taxable: boolean | null;
+};
+
+type ProductSearchInventoryRow = ProductRow & {
+  inventory_quantity: number | string | null;
 };
 
 type InventoryRow = {
@@ -96,11 +125,44 @@ type StoreRow = {
   name: string;
 };
 
+type ProductDepartmentRow = {
+  department_id: string;
+  department_name: string;
+  division_id: string;
+  division_name: string;
+};
+
 type IssueQuoteOptions = {
   customer?: Customer | null;
   segment: string;
   comparedSegment?: string;
 };
+
+export type OfferConfigurationFilters = {
+  promotionId?: string;
+  offerId?: string;
+};
+
+export type OfferConfigurationRow = {
+  ruleId: string;
+  promotionId: string;
+  promotionName: string;
+  offerId: string;
+  type: OfferType;
+  sku: string;
+  segment: string;
+  importedQuantity?: number;
+  thresholdQuantity: number;
+  thresholdType: ThresholdType;
+  allowStacking: boolean;
+  discountPercent?: number;
+  fixedPrice?: number;
+  discountType?: string;
+};
+
+type OfferConfigurationResult =
+  | { ok: true; rows: OfferConfigurationRow[] }
+  | { ok: false; message: string };
 
 export type IssuedQuote = {
   id: string;
@@ -156,7 +218,7 @@ export async function testSupabaseConnection() {
   if (!supabase) return { ok: false, label: "No configurado" };
 
   const { error } = await supabase.auth.getSession();
-  return error ? { ok: false, label: "Sin conexion" } : { ok: true, label: "Conectado" };
+  return error ? { ok: false, label: "Sin conexión" } : { ok: true, label: "Conectado" };
 }
 
 export async function refreshRemoteDataStatuses() {
@@ -220,11 +282,11 @@ export async function importPromotionRows(rows: ImportedPromotionRow[]) {
 
 export async function issueQuote(summary: QuoteSummary, options: IssueQuoteOptions): Promise<IssueQuoteResult> {
   if (!supabase) {
-    return { ok: false, message: "Supabase no esta configurado; no se puede asignar un consecutivo seguro." };
+    return { ok: false, message: "Supabase no está configurado; no se puede asignar un consecutivo seguro." };
   }
 
   if (!summary.lines.length) {
-    return { ok: false, message: "Agregue al menos un SKU antes de generar el PDF." };
+    return { ok: false, message: "Agregue al menos un SKU antes de emitir la cotización." };
   }
 
   const payload = {
@@ -255,7 +317,7 @@ export async function issueQuote(summary: QuoteSummary, options: IssueQuoteOptio
 
   const row = Array.isArray(data) ? data[0] as IssuedQuoteRow | undefined : undefined;
   if (!row?.quote_id || !row.quote_code) {
-    return { ok: false, message: "La cotizacion se envio, pero Supabase no devolvio el consecutivo." };
+    return { ok: false, message: "La cotización se envió, pero Supabase no devolvió el consecutivo." };
   }
 
   return {
@@ -318,44 +380,129 @@ export async function loadStores(): Promise<StoreLocation[]> {
   return (data as StoreRow[]).map((store) => ({ id: store.id, name: store.name }));
 }
 
+export async function loadProductDepartments(): Promise<ProductDepartment[]> {
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from("product_departments")
+    .select("department_id,department_name,division_id,division_name")
+    .order("division_name", { ascending: true })
+    .order("department_name", { ascending: true });
+
+  if (error || !data) return [];
+  return (data as ProductDepartmentRow[]).map(mapProductDepartment);
+}
+
 export async function loadProductsFromSupabase(): Promise<Product[] | null> {
   if (!supabase) return null;
 
-  const { data, error } = await supabase
+  const response = await supabase
     .from("products")
-    .select("sku,legacy_number,description,unit_of_measure,list_price,part_number,max_discount,taxable")
+    .select(productSelectColumns)
     .order("description", { ascending: true })
     .limit(8000);
+
+  const { data, error } = response.error && isMissingColumnError(response.error)
+    ? await supabase
+        .from("products")
+        .select(legacyProductSelectColumns)
+        .order("description", { ascending: true })
+        .limit(8000)
+    : response;
 
   if (error || !data?.length) return null;
   return (data as ProductRow[]).map(mapProduct);
 }
 
 export async function searchProductsFromSupabase(term: string, limit = 60): Promise<Product[] | null> {
+  const page = await searchProductPageFromSupabase(term, { limit });
+  return page?.products ?? null;
+}
+
+export async function searchProductPageFromSupabase(
+  term: string,
+  options: ProductSearchOptions = {},
+): Promise<ProductSearchPage | null> {
   if (!supabase) return null;
 
   const query = term.trim();
+  const limit = Math.max(1, Math.min(options.limit ?? 30, 100));
+  const offset = Math.max(0, options.offset ?? 0);
+
+  if (inventoryFeatureEnabled && options.prioritizeInventory) {
+    const inventoryPage = await searchProductPageWithInventory(query, {
+      divisionId: options.divisionId,
+      limit,
+      offset,
+      storeId: options.storeId ?? inventoryStoreId,
+    });
+    if (inventoryPage) return inventoryPage;
+  }
+
+  const departmentIds = options.divisionId ? await loadDepartmentIdsForDivision(options.divisionId) : [];
+  if (options.divisionId && !departmentIds.length) return { products: [], hasMore: false };
+
   let request = supabase
     .from("products")
-    .select("sku,legacy_number,description,unit_of_measure,list_price,part_number,max_discount,taxable")
-    .order("description", { ascending: true })
-    .limit(limit);
+    .select(productSelectColumns);
 
   if (query) {
-    const pattern = `%${escapePostgrestPattern(query)}%`;
+    const terms = unique([query, ...query.split(/\s+/).filter((item) => item.length >= 2).slice(0, 3)]);
+    const patterns = terms.map((item) => `%${escapePostgrestPattern(item)}%`);
     request = request.or(
-      [
+      patterns.flatMap((pattern) => [
         `sku.ilike.${pattern}`,
         `description.ilike.${pattern}`,
         `part_number.ilike.${pattern}`,
         `legacy_number.ilike.${pattern}`,
-      ].join(","),
+      ]).join(","),
     );
   }
 
-  const { data, error } = await request;
+  if (departmentIds.length) request = request.in("department_id", departmentIds);
+
+  const response = await request
+    .order("description", { ascending: true })
+    .range(offset, offset + limit);
+
+  const { data, error } = response.error && isMissingColumnError(response.error)
+    ? await buildLegacyProductSearchRequest(query, offset, limit)
+    : response;
+
   if (error || !data?.length) return null;
-  return (data as ProductRow[]).map(mapProduct);
+
+  const products = (data as ProductRow[]).map(mapProduct);
+  return {
+    products: sortProductsByRelevance(products.slice(0, limit), query),
+    hasMore: products.length > limit,
+  };
+}
+
+async function searchProductPageWithInventory(
+  query: string,
+  options: { divisionId?: string; limit: number; offset: number; storeId: string },
+): Promise<ProductSearchPage | null> {
+  if (!supabase) return null;
+
+  const args: Record<string, string | number> = {
+    search_term: query,
+    search_store_id: options.storeId,
+    result_limit: options.limit + 1,
+    result_offset: options.offset,
+  };
+  if (options.divisionId) args.search_division_id = options.divisionId;
+
+  const { data, error } = await supabase.rpc("search_products_with_inventory", args);
+
+  if (error || !data?.length) return null;
+
+  const rows = data as ProductSearchInventoryRow[];
+  const pageRows = rows.slice(0, options.limit);
+  return {
+    products: pageRows.map(mapProduct),
+    hasMore: rows.length > options.limit,
+    inventory: mapProductSearchInventory(pageRows, options.storeId),
+  };
 }
 
 export async function loadProductsBySkus(skus: string[]): Promise<Product[]> {
@@ -366,8 +513,18 @@ export async function loadProductsBySkus(skus: string[]): Promise<Product[]> {
 
   const { data, error } = await supabase
     .from("products")
-    .select("sku,legacy_number,description,unit_of_measure,list_price,part_number,max_discount,taxable")
+    .select(productSelectColumns)
     .in("sku", cleanSkus);
+
+  if (error && isMissingColumnError(error)) {
+    const legacyResponse = await supabase
+      .from("products")
+      .select(legacyProductSelectColumns)
+      .in("sku", cleanSkus);
+
+    if (legacyResponse.error || !legacyResponse.data) return [];
+    return (legacyResponse.data as ProductRow[]).map(mapProduct);
+  }
 
   if (error || !data) return [];
   return (data as ProductRow[]).map(mapProduct);
@@ -448,16 +605,35 @@ export async function syncProductsToSupabase(
   const validProducts = deduplicateProducts(products.filter((product) => product.sku && product.description && product.listPrice > 0));
   if (!validProducts.length) return { ok: false, message: "No hay productos validos para sincronizar." };
 
-  onProgress?.(0, validProducts.length, "Eliminando catalogo anterior");
-  const deleted = await supabase.from("products").delete().not("sku", "is", null);
-  if (deleted.error) return { ok: false, message: deleted.error.message };
+  onProgress?.(0, validProducts.length, "Limpiando catálogo anterior");
+  const prepared = await prepareCatalogSync();
+  if (!prepared.ok) return prepared;
 
-  const uploaded = await uploadInChunks(validProducts, 700, onProgress, "Cargando catalogo vigente", async (chunk) =>
+  const uploaded = await uploadInChunks(validProducts, 700, onProgress, "Cargando catálogo vigente", async (chunk) =>
     supabase.from("products").insert(chunk.map(productPayload)),
   );
   if (!uploaded.ok) return uploaded;
 
-  return { ok: true, message: `Sincronizacion de catalogo completada: ${validProducts.length} productos publicados.` };
+  return { ok: true, message: `Sincronización de catálogo completada: ${validProducts.length} productos publicados.` };
+}
+
+async function prepareCatalogSync() {
+  if (!supabase) {
+    return { ok: false, message: "Supabase no esta configurado en este entorno." };
+  }
+
+  const prepared = await supabase.rpc("prepare_catalog_sync");
+  if (!prepared.error) return { ok: true, message: "Catalogo anterior limpiado." };
+
+  if (isMissingRpcFunctionError(prepared.error)) {
+    return {
+      ok: false,
+      message:
+        "Falta ejecutar la funcion prepare_catalog_sync en Supabase. Ejecute supabase/catalog_sync.sql y vuelva a intentar la carga del catalogo.",
+    };
+  }
+
+  return { ok: false, message: prepared.error.message };
 }
 
 export async function syncInventoryToSupabase(
@@ -472,19 +648,45 @@ export async function syncInventoryToSupabase(
     return { ok: false, message: "Supabase no esta configurado en este entorno." };
   }
 
-  const validRecords = deduplicateInventory(records.filter((record) => record.storeId && record.sku));
-  if (!validRecords.length) return { ok: false, message: "No hay inventario valido para sincronizar." };
+  const validRecords = deduplicateInventory(
+    records.filter((record) => record.storeId === inventoryStoreId && record.sku),
+  );
+  if (!validRecords.length) {
+    return { ok: false, message: `No hay inventario valido de tienda ${inventoryStoreId} para sincronizar.` };
+  }
 
-  onProgress?.(0, validRecords.length, "Eliminando inventario anterior");
-  const deleted = await supabase.from("inventory").delete().not("sku", "is", null);
-  if (deleted.error) return { ok: false, message: deleted.error.message };
+  onProgress?.(0, validRecords.length, "Limpiando inventario anterior");
+  const prepared = await prepareInventorySync();
+  if (!prepared.ok) return prepared;
 
   const uploaded = await uploadInChunks(validRecords, 900, onProgress, "Cargando inventario vigente", async (chunk) =>
     supabase.from("inventory").insert(chunk.map(inventoryPayload)),
   );
   if (!uploaded.ok) return uploaded;
 
-  return { ok: true, message: `Sincronizacion de inventario completada: ${validRecords.length} registros publicados.` };
+  return {
+    ok: true,
+    message: `Sincronizacion de inventario completada: ${validRecords.length} registros de tienda ${inventoryStoreId} publicados.`,
+  };
+}
+
+async function prepareInventorySync() {
+  if (!supabase) {
+    return { ok: false, message: "Supabase no esta configurado en este entorno." };
+  }
+
+  const prepared = await supabase.rpc("prepare_inventory_sync");
+  if (!prepared.error) return { ok: true, message: "Inventario anterior limpiado." };
+
+  if (isMissingRpcFunctionError(prepared.error)) {
+    return {
+      ok: false,
+      message:
+        "Falta ejecutar la funcion prepare_inventory_sync en Supabase. Ejecute supabase/inventory_sync.sql y vuelva a intentar la carga del inventario.",
+    };
+  }
+
+  return { ok: false, message: prepared.error.message };
 }
 
 export async function syncStoresToSupabase(
@@ -572,6 +774,134 @@ export async function loadOfferRulesForSkus(skus: string[], segments: string[]) 
   const baseRows = await fetchOfferRuleRows(cleanSkus, ruleSegments, promotionIds);
   const kitRows = await fetchKitCompanionRows(baseRows, ruleSegments, promotionIds);
   return mapOfferRules([...baseRows, ...kitRows], promotionMap);
+}
+
+export async function searchOfferConfigurations(
+  filters: OfferConfigurationFilters,
+  limit = 120,
+): Promise<OfferConfigurationResult> {
+  const promotionQuery = filters.promotionId?.trim();
+  const offerQuery = filters.offerId?.trim();
+
+  if (!supabase) {
+    return {
+      ok: true,
+      rows: sampleOfferRules
+        .filter((rule) => matchesConfigFilter(rule.promotionId, promotionQuery) && matchesConfigFilter(rule.id, offerQuery))
+        .slice(0, limit)
+        .map((rule) => ({
+          ruleId: `${rule.promotionId}-${rule.id}-${rule.sku}-${rule.segment}`,
+          promotionId: rule.promotionId,
+          promotionName: rule.promotionName,
+          offerId: rule.id,
+          type: rule.type,
+          sku: rule.sku,
+          segment: rule.segment,
+          importedQuantity: rule.minQuantity,
+          thresholdQuantity: rule.thresholdQuantity ?? 1,
+          thresholdType: rule.thresholdType ?? "EXACT",
+          allowStacking: rule.allowStacking ?? false,
+          discountPercent: rule.discountPercent,
+          fixedPrice: rule.fixedPrice,
+          discountType: rule.discountType,
+        })),
+    };
+  }
+
+  let request = supabase
+    .from("offer_rules")
+    .select("id,external_offer_id,promotion_id,offer_type,sku,segment,min_quantity,fixed_price,discount_percent,discount_type,configuration_note,allow_stacking,threshold_quantity,threshold_type")
+    .eq("is_active", true)
+    .order("promotion_id", { ascending: true })
+    .limit(limit);
+
+  if (promotionQuery) request = request.ilike("promotion_id", `%${escapePostgrestPattern(promotionQuery)}%`);
+  if (offerQuery) request = request.ilike("external_offer_id", `%${escapePostgrestPattern(offerQuery)}%`);
+
+  const { data, error } = await request;
+  if (error || !data) {
+    return {
+      ok: false,
+      message: error?.message ?? "No se pudieron cargar las configuraciones de ofertas.",
+    };
+  }
+
+  const rows = data as PromotionRuleRow[];
+  const promotionMap = await loadPromotionMapByIds(unique(rows.map((row) => row.promotion_id).filter(Boolean) as string[]));
+  return { ok: true, rows: mapOfferConfigurationRows(rows, promotionMap) };
+}
+
+export async function updateOfferCombinationSetting(row: OfferConfigurationRow, allowStacking: boolean) {
+  if (!supabase) {
+    return { ok: false, message: "Supabase no esta configurado en este entorno." };
+  }
+
+  const updatedAt = new Date().toISOString();
+  const setting = await supabase
+    .from("promotion_offer_settings")
+    .upsert({
+      promotion_id: row.promotionId,
+      offer_id: row.offerId,
+      allow_stacking: allowStacking,
+      updated_at: updatedAt,
+    }, {
+      onConflict: "promotion_id,offer_id",
+    });
+
+  if (setting.error) return { ok: false, message: setting.error.message };
+
+  const rules = await supabase
+    .from("offer_rules")
+    .update({ allow_stacking: allowStacking, updated_at: updatedAt })
+    .eq("promotion_id", row.promotionId)
+    .eq("external_offer_id", row.offerId);
+
+  return rules.error
+    ? { ok: false, message: rules.error.message }
+    : { ok: true, message: "Configuracion de combinacion actualizada." };
+}
+
+export async function updateOfferSkuThresholdSetting(row: OfferConfigurationRow) {
+  if (!supabase) {
+    return { ok: false, message: "Supabase no esta configurado en este entorno." };
+  }
+
+  const updatedAt = new Date().toISOString();
+  const thresholdQuantity = Math.max(1, Number(row.thresholdQuantity) || 1);
+  const thresholdType = toThresholdType(row.thresholdType);
+  const setting = await supabase
+    .from("promotion_offer_sku_settings")
+    .upsert({
+      promotion_id: row.promotionId,
+      offer_id: row.offerId,
+      sku: row.sku,
+      segment: row.segment || " - ",
+      threshold_quantity: thresholdQuantity,
+      threshold_type: thresholdType,
+      updated_at: updatedAt,
+    }, {
+      onConflict: "promotion_id,offer_id,sku,segment",
+    });
+
+  if (setting.error) return { ok: false, message: setting.error.message };
+
+  let request = supabase
+    .from("offer_rules")
+    .update({
+      threshold_quantity: thresholdQuantity,
+      threshold_type: thresholdType,
+      updated_at: updatedAt,
+    })
+    .eq("promotion_id", row.promotionId)
+    .eq("external_offer_id", row.offerId)
+    .eq("sku", row.sku);
+
+  request = row.segment ? request.eq("segment", row.segment) : request.eq("segment", " - ");
+  const rules = await request;
+
+  return rules.error
+    ? { ok: false, message: rules.error.message }
+    : { ok: true, message: "Threshold actualizado." };
 }
 
 async function uploadPromotionRowsInBatches(
@@ -700,7 +1030,7 @@ async function fetchOfferRuleRows(skus: string[], segments: string[], promotionI
 
   const { data, error } = await supabase
     .from("offer_rules")
-    .select("id,external_offer_id,promotion_id,offer_type,sku,segment,min_quantity,fixed_price,discount_percent,discount_type,configuration_note")
+    .select("id,external_offer_id,promotion_id,offer_type,sku,segment,min_quantity,fixed_price,discount_percent,discount_type,configuration_note,allow_stacking,threshold_quantity,threshold_type")
     .eq("is_active", true)
     .in("promotion_id", promotionIds)
     .in("segment", segments)
@@ -717,7 +1047,7 @@ async function fetchKitCompanionRows(rows: PromotionRuleRow[], segments: string[
 
   const { data, error } = await supabase
     .from("offer_rules")
-    .select("id,external_offer_id,promotion_id,offer_type,sku,segment,min_quantity,fixed_price,discount_percent,discount_type,configuration_note")
+    .select("id,external_offer_id,promotion_id,offer_type,sku,segment,min_quantity,fixed_price,discount_percent,discount_type,configuration_note,allow_stacking,threshold_quantity,threshold_type")
     .eq("is_active", true)
     .in("promotion_id", promotionIds)
     .in("segment", segments)
@@ -731,6 +1061,7 @@ function mapOfferRules(rows: PromotionRuleRow[], promotions: Map<string, Promoti
     .filter((row) => row.external_offer_id && row.promotion_id && row.offer_type && row.sku)
     .map((row) => ({
       id: row.external_offer_id!,
+      ruleId: row.id,
       promotionId: row.promotion_id!,
       promotionName: promotions.get(row.promotion_id!)?.name ?? row.promotion_id!,
       startsAt: promotions.get(row.promotion_id!)?.starts_at ?? undefined,
@@ -742,10 +1073,51 @@ function mapOfferRules(rows: PromotionRuleRow[], promotions: Map<string, Promoti
       fixedPrice: row.fixed_price === null ? undefined : Number(row.fixed_price),
       discountPercent: row.discount_percent === null ? undefined : Number(row.discount_percent),
       discountType: row.discount_type ?? undefined,
+      thresholdQuantity: Number(row.threshold_quantity ?? 1) || 1,
+      thresholdType: toThresholdType(row.threshold_type),
+      allowStacking: row.allow_stacking ?? false,
       configurationNote: row.configuration_note ?? undefined,
     }));
 
   return deduplicateRules(mapped);
+}
+
+function mapOfferConfigurationRows(rows: PromotionRuleRow[], promotions: Map<string, PromotionRow>): OfferConfigurationRow[] {
+  return rows
+    .filter((row) => row.id && row.external_offer_id && row.promotion_id && row.offer_type && row.sku)
+    .map((row) => ({
+      ruleId: row.id,
+      promotionId: row.promotion_id!,
+      promotionName: promotions.get(row.promotion_id!)?.name ?? row.promotion_id!,
+      offerId: row.external_offer_id!,
+      type: row.offer_type!,
+      sku: row.sku!,
+      segment: row.segment ?? " - ",
+      importedQuantity: Number(row.min_quantity ?? 0) || undefined,
+      thresholdQuantity: Number(row.threshold_quantity ?? 1) || 1,
+      thresholdType: toThresholdType(row.threshold_type),
+      allowStacking: row.allow_stacking ?? false,
+      discountPercent: row.discount_percent === null ? undefined : Number(row.discount_percent),
+      fixedPrice: row.fixed_price === null ? undefined : Number(row.fixed_price),
+      discountType: row.discount_type ?? undefined,
+    }));
+}
+
+async function loadPromotionMapByIds(promotionIds: string[]) {
+  if (!supabase || !promotionIds.length) return new Map<string, PromotionRow>();
+
+  const { data, error } = await supabase
+    .from("promotions")
+    .select("id,name,starts_at,ends_at")
+    .in("id", promotionIds);
+
+  if (error || !data) return new Map<string, PromotionRow>();
+  return new Map((data as PromotionRow[]).map((promotion) => [promotion.id, promotion]));
+}
+
+function matchesConfigFilter(value: string, query: string | undefined) {
+  if (!query) return true;
+  return value.toLowerCase().includes(query.toLowerCase());
 }
 
 function mapCustomer(row: CustomerRow): Customer {
@@ -770,8 +1142,18 @@ function mapProduct(row: ProductRow): Product {
     unitOfMeasure: row.unit_of_measure ?? undefined,
     listPrice: Number(row.list_price ?? 0),
     partNumber: row.part_number ?? undefined,
+    departmentId: row.department_id ?? undefined,
     maxDiscount: row.max_discount === null ? undefined : Number(row.max_discount),
     taxable: row.taxable ?? true,
+  };
+}
+
+function mapProductDepartment(row: ProductDepartmentRow): ProductDepartment {
+  return {
+    departmentId: row.department_id,
+    departmentName: row.department_name,
+    divisionId: row.division_id,
+    divisionName: row.division_name,
   };
 }
 
@@ -791,6 +1173,21 @@ function mapInventory(rows: InventoryRow[], storeMap: Map<string, string>) {
 
   grouped.forEach((inventory) => {
     inventory.stores.sort((left, right) => right.quantity - left.quantity);
+  });
+
+  return grouped;
+}
+
+function mapProductSearchInventory(rows: ProductSearchInventoryRow[], storeId: string) {
+  const grouped = new Map<string, ProductInventory>();
+  rows.forEach((row) => {
+    const quantity = Number(row.inventory_quantity ?? 0);
+    grouped.set(row.sku, {
+      totalQuantity: quantity,
+      stores: quantity > 0
+        ? [{ storeId, storeName: `Tienda ${storeId}`, quantity }]
+        : [],
+    });
   });
 
   return grouped;
@@ -830,6 +1227,7 @@ function productPayload(product: Product) {
     unit_of_measure: product.unitOfMeasure ?? null,
     list_price: product.listPrice,
     part_number: product.partNumber ?? null,
+    department_id: product.departmentId ?? null,
     max_discount: product.maxDiscount ?? null,
     taxable: product.taxable,
     updated_at: new Date().toISOString(),
@@ -915,6 +1313,93 @@ function filterSampleCustomers(term: string, limit: number) {
 
 function escapePostgrestPattern(value: string) {
   return value.replace(/[,%()]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+async function loadDepartmentIdsForDivision(divisionId: string) {
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from("product_departments")
+    .select("department_id")
+    .eq("division_id", divisionId);
+
+  if (error || !data) return [];
+  return (data as Pick<ProductDepartmentRow, "department_id">[]).map((row) => row.department_id);
+}
+
+async function buildLegacyProductSearchRequest(query: string, offset: number, limit: number) {
+  if (!supabase) return { data: null, error: { message: "Supabase no esta configurado." } };
+
+  let request = supabase
+    .from("products")
+    .select(legacyProductSelectColumns);
+
+  if (query) {
+    const terms = unique([query, ...query.split(/\s+/).filter((item) => item.length >= 2).slice(0, 3)]);
+    const patterns = terms.map((item) => `%${escapePostgrestPattern(item)}%`);
+    request = request.or(
+      patterns.flatMap((pattern) => [
+        `sku.ilike.${pattern}`,
+        `description.ilike.${pattern}`,
+        `part_number.ilike.${pattern}`,
+        `legacy_number.ilike.${pattern}`,
+      ]).join(","),
+    );
+  }
+
+  return request
+    .order("description", { ascending: true })
+    .range(offset, offset + limit);
+}
+
+function isMissingRpcFunctionError(error: { code?: string; message: string }) {
+  return error.code === "PGRST202" || error.message.toLowerCase().includes("could not find the function");
+}
+
+function isMissingColumnError(error: { code?: string; message: string }) {
+  return error.code === "42703" || error.message.toLowerCase().includes("department_id");
+}
+
+function sortProductsByRelevance(products: Product[], query: string) {
+  const normalizedQuery = normalizeSearchValue(query);
+  if (!normalizedQuery) return products;
+  const queryTokens = normalizedQuery.split(/\s+/).filter(Boolean);
+
+  return [...products].sort((left, right) => {
+    const scoreDifference = productSearchScore(left, normalizedQuery, queryTokens) - productSearchScore(right, normalizedQuery, queryTokens);
+    if (scoreDifference !== 0) return scoreDifference;
+    return left.description.localeCompare(right.description, "es");
+  });
+}
+
+function productSearchScore(product: Product, query: string, queryTokens: string[]) {
+  const sku = normalizeSearchValue(product.sku);
+  const partNumber = normalizeSearchValue(product.partNumber);
+  const legacyNumber = normalizeSearchValue(product.legacyNumber);
+  const description = normalizeSearchValue(product.description);
+  const searchable = [sku, partNumber, legacyNumber, description].join(" ");
+
+  if (sku === query) return 0;
+  if (partNumber === query || legacyNumber === query) return 1;
+  if (sku.startsWith(query)) return 2;
+  if (partNumber.startsWith(query) || legacyNumber.startsWith(query)) return 3;
+  if (description.startsWith(query)) return 4;
+  if (description.includes(query)) return 5;
+  if (queryTokens.length && queryTokens.every((token) => searchable.includes(token))) return 6;
+  if (sku.includes(query) || partNumber.includes(query) || legacyNumber.includes(query)) return 7;
+  return 8;
+}
+
+function normalizeSearchValue(value: string | undefined) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
+}
+
+function toThresholdType(value: unknown): ThresholdType {
+  return value === "MINIMUM" ? "MINIMUM" : "EXACT";
 }
 
 async function countRows(table: "promotions" | "customers" | "products" | "inventory" | "stores") {

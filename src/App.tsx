@@ -61,7 +61,7 @@ export default function App() {
     }
   }, [path, profile, safePath]);
 
-  if (loading) return <div className="app-loading">Cargando sesion...</div>;
+  if (loading) return <div className="app-loading">Cargando sesión...</div>;
   if (recoveringPassword) return <PasswordRecoveryPage onDone={() => setRecoveringPassword(false)} />;
   if (!authenticated) return <AuthPage />;
   if (!profile) return <AccessPendingPage onSignOut={signOut} />;

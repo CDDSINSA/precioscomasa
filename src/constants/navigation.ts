@@ -18,13 +18,13 @@ export const navigation: NavItem[] = [
   { path: "/", label: "Inicio", icon: Home, roles: ["admin"] },
   {
     path: "/administracion",
-    label: "Administracion",
+    label: "Administración",
     icon: Settings2,
     roles: ["admin"],
   },
   {
     path: "/cotizacion",
-    label: "Cotizacion",
+    label: "Cotización",
     icon: ClipboardList,
     roles: ["admin", "asesor-comasa", "asesor-retail"],
   },

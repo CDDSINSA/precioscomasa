@@ -16,7 +16,7 @@ export function HomePage() {
           <img className="home-logo" src={comasaLogo} alt="COMASA" />
           <span>COMASA</span>
         </div>
-        <p>Gestion de promociones y cotizaciones por segmento comercial.</p>
+        <p>Gestión de promociones y cotizaciones por segmento comercial.</p>
       </div>
 
       <div className="home-tiles">
@@ -25,8 +25,8 @@ export function HomePage() {
             <div className="access-icon">
               <Settings2 size={28} />
             </div>
-            <h2>Administracion</h2>
-            <p>Importacion diaria, reglas comerciales y seguimiento de promociones.</p>
+            <h2>Administración</h2>
+            <p>Importación diaria, reglas comerciales y seguimiento de promociones.</p>
             <Button onClick={() => open("/administracion")}>
               <Settings2 size={17} />
               Entrar
@@ -39,8 +39,8 @@ export function HomePage() {
             <div className="access-icon cyan">
               <ClipboardList size={28} />
             </div>
-            <h2>Cotizacion</h2>
-            <p>Evaluacion de SKU, cantidades, descuentos y comparacion por segmento.</p>
+            <h2>Cotización</h2>
+            <p>Evaluación de SKU, cantidades, descuentos y comparación por segmento.</p>
             <Button onClick={() => open("/cotizacion")}>
               <ClipboardList size={17} />
               Cotizar

@@ -16,7 +16,7 @@ const eventName = "comasa:data-status-change";
 const defaults: Record<Exclude<DataStatusKey, "supabase">, Omit<DataStatusItem, "key">> = {
   promotions: { label: "Promos", value: "pending", detail: "Pendiente" },
   customers: { label: "Clientes", value: "pending", detail: "Pendiente" },
-  catalog: { label: "Catalogo", value: "pending", detail: "Pendiente" },
+  catalog: { label: "Catálogo", value: "pending", detail: "Pendiente" },
   inventory: { label: "Inventario", value: "pending", detail: "Pendiente" },
   stores: { label: "Tiendas", value: "pending", detail: "Pendiente" },
 };

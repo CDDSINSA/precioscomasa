@@ -194,6 +194,9 @@ function parseCatalogRows(rows: Record<string, unknown>[]): Product[] {
         const listPrice = toNumber(pick(data, ["unit_retail", "precio de lista", "list_price"]) ?? data[12]) ?? 0;
         const partNumber = String(pick(data, ["vpn", "numero de parte", "part_number"]) ?? data[14] ?? "").trim();
         const legacyNumber = String(pick(data, ["legacy_number"]) ?? data[1] ?? "").trim();
+        const departmentId = String(
+          pick(data, ["dep", "dept", "department_id", "id departamento", "departamento"]) ?? data[4] ?? "",
+        ).trim();
         const maxDiscount = toNumber(pick(data, ["tienda_desc_max"]) ?? data[27]);
         const taxableValue = String(pick(data, ["aplica_impuesto"]) ?? data[26] ?? "S").trim().toUpperCase();
 
@@ -204,6 +207,7 @@ function parseCatalogRows(rows: Record<string, unknown>[]): Product[] {
           unitOfMeasure: unitOfMeasure || undefined,
           listPrice,
           partNumber: partNumber || undefined,
+          departmentId: departmentId || undefined,
           maxDiscount,
           taxable: taxableValue !== "N",
         };

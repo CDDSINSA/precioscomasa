@@ -1,15 +1,16 @@
-import { Download, FileUp, GitCompareArrows, PackagePlus, ReceiptText, Search, Trash2, UserSearch, X } from "lucide-react";
+import { Download, FileCheck2, FileUp, GitCompareArrows, PackagePlus, ReceiptText, Search, Trash2, TriangleAlert, UserSearch, X } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { type RefObject, type UIEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppFeedback } from "../../components/AppFeedback";
-import { Button, Card, CardContent, Header, Metric } from "../../components/ui";
+import { Button, Card, CardContent, Header } from "../../components/ui";
 import { inventoryFeatureEnabled } from "../../config/features";
 import { loadCatalog, sampleCatalog } from "../../services/catalog";
 import { exportQuotePdf } from "../../services/pdf";
 import { segments, sampleOfferRules } from "../../services/promotions";
 import { buildQuote, formatCurrency } from "../../services/quote";
-import { issueQuote, loadOfferRulesForSkus, loadProductsBySkus, loadStores } from "../../services/supabase";
+import { issueQuote, loadOfferRulesForSkus, loadProductsBySkus } from "../../services/supabase";
 import type { AppProfile, Customer, OfferRule } from "../../types/domain";
-import type { Product, QuoteItem, QuoteSummary, StoreLocation } from "../../types/domain";
+import type { Product, QuoteItem, QuoteSummary } from "../../types/domain";
 import { CustomerSearchModal } from "./CustomerSearchModal";
 import { ImportQuoteModal } from "./ImportQuoteModal";
 import { ProductImage } from "./ProductImage";
@@ -25,13 +26,12 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
   const [skuModalOpen, setSkuModalOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [customerModalOpen, setCustomerModalOpen] = useState(false);
+  const [confirmIssueOpen, setConfirmIssueOpen] = useState(false);
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [catalog, setCatalog] = useState(sampleCatalog);
-  const [stores, setStores] = useState<StoreLocation[]>([]);
-  const [selectedStoreIds, setSelectedStoreIds] = useState<string[]>(["1041"]);
-  const [requireStock, setRequireStock] = useState(true);
   const [offerRules, setOfferRules] = useState<OfferRule[]>(sampleOfferRules);
   const [issuingPdf, setIssuingPdf] = useState(false);
+  const [downloadingDraft, setDownloadingDraft] = useState(false);
   const [quoteFeedback, setQuoteFeedback] = useState<{ tone: "success" | "warning" | "info"; message: string } | null>(null);
   const quoteScrollRef = useRef<HTMLDivElement>(null);
   const compareScrollRef = useRef<HTMLDivElement>(null);
@@ -42,6 +42,7 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
     () => (compareSegment ? buildQuote(items, compareSegment, offerRules, catalog) : undefined),
     [catalog, compareSegment, items, offerRules],
   );
+  const issueBlocker = issueBlockerMessage(customer, segment, quote.lines.length);
   const mergeCatalogProducts = useCallback((products: Product[]) => {
     if (!products.length) return;
     setCatalog((current) => {
@@ -55,12 +56,6 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
     let active = true;
     loadCatalog().then((loadedCatalog) => {
       if (active) setCatalog(loadedCatalog);
-    });
-    loadStores().then((loadedStores) => {
-      if (!active) return;
-      if (!inventoryFeatureEnabled) return;
-      setStores(loadedStores);
-      setSelectedStoreIds((current) => current.length ? current : defaultStoreSelection(loadedStores));
     });
     return () => {
       active = false;
@@ -130,13 +125,13 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
 
   async function handleGeneratePdf() {
     if (issuingPdf) return;
-    if (!quote.lines.length) {
-      setQuoteFeedback({ tone: "warning", message: "Agregue al menos un SKU antes de generar el PDF." });
+    if (issueBlocker) {
+      setQuoteFeedback({ tone: "warning", message: issueBlocker });
       return;
     }
 
     setIssuingPdf(true);
-    setQuoteFeedback({ tone: "info", message: "Emitiendo cotizacion y reservando consecutivo..." });
+    setQuoteFeedback({ tone: "info", message: "Emitiendo cotización y reservando consecutivo..." });
 
     const issued = await issueQuote(quote, {
       customer,
@@ -147,6 +142,7 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
     if (!issued.ok) {
       setQuoteFeedback({ tone: "warning", message: issued.message });
       setIssuingPdf(false);
+      setConfirmIssueOpen(false);
       return;
     }
 
@@ -159,36 +155,59 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
         quoteCode: issued.quote.quoteCode,
         segment,
       });
-      setQuoteFeedback({ tone: "success", message: `Cotizacion ${issued.quote.quoteCode} emitida y PDF generado.` });
+      setQuoteFeedback({ tone: "success", message: `Cotización ${issued.quote.quoteCode} emitida y PDF generado.` });
     } catch (error) {
       setQuoteFeedback({
         tone: "warning",
-        message: `Cotizacion ${issued.quote.quoteCode} emitida, pero no se pudo descargar el PDF: ${errorMessage(error)}`,
+        message: `Cotización ${issued.quote.quoteCode} emitida, pero no se pudo descargar el PDF: ${errorMessage(error)}`,
       });
     } finally {
       setIssuingPdf(false);
+      setConfirmIssueOpen(false);
+    }
+  }
+
+  async function handleDownloadDraftPdf() {
+    if (downloadingDraft) return;
+    if (!quote.lines.length) {
+      setQuoteFeedback({ tone: "warning", message: "Agregue al menos un SKU antes de descargar el borrador." });
+      return;
+    }
+
+    setDownloadingDraft(true);
+    setQuoteFeedback({ tone: "info", message: "Generando borrador sin asignar consecutivo..." });
+
+    try {
+      await exportQuotePdf(quote, {
+        customer,
+        generatedBy: profile?.fullName || profile?.email || "Usuario COMASA",
+        segment,
+      });
+      setQuoteFeedback({ tone: "success", message: "Borrador descargado. Aún no se ha emitido consecutivo." });
+    } catch (error) {
+      setQuoteFeedback({ tone: "warning", message: `No se pudo descargar el borrador: ${errorMessage(error)}` });
+    } finally {
+      setDownloadingDraft(false);
     }
   }
 
   return (
     <div>
-      <Header title="Cotizacion" subtitle="Calculo de precio final por SKU, cantidad y segmento comercial." />
-
-      <div className="metrics">
-        <Metric title="Subtotal lista" value={formatCurrency(quote.subtotalList)} icon={ReceiptText} />
-        <Metric title="Subtotal final" value={formatCurrency(quote.subtotalFinal)} icon={Search} />
-        <Metric title="Ahorro" value={formatCurrency(quote.savings)} icon={GitCompareArrows} />
-        <Metric title="Lineas" value={String(quote.lines.length)} icon={FileUp} />
+      <div className="quote-page-head">
+        <Header title="Cotización" subtitle="Cálculo de precio final por SKU, cantidad y segmento comercial." />
+        <QuoteSummaryCard quote={quote} />
       </div>
 
       <Card className="form-card">
         <CardContent>
           <div className="section-head">
             <div>
-              <h2>Parametros de cotizacion</h2>
+              <h2>Parámetros de cotización</h2>
               <span>Seleccione cliente y compare contra otro segmento cuando sea necesario.</span>
             </div>
-            <div className="toolbar-actions">
+          </div>
+          <div className="quote-command-bar" aria-label="Acciones de cotización">
+            <div className="quote-command-group">
               <Button variant="outline" onClick={() => setCustomerModalOpen(true)}>
                 <UserSearch size={16} />
                 Buscar cliente
@@ -199,6 +218,8 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
                   Limpiar
                 </Button>
               ) : null}
+            </div>
+            <div className="quote-command-group">
               <Button variant="outline" onClick={() => setImportModalOpen(true)}>
                 <FileUp size={16} />
                 Importar
@@ -207,23 +228,32 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
                 <PackagePlus size={16} />
                 Agregar SKU
               </Button>
-              <Button onClick={handleGeneratePdf} disabled={issuingPdf || !quote.lines.length}>
+            </div>
+            <div className="quote-command-group quote-document-actions">
+              <Button variant="outline" onClick={handleDownloadDraftPdf} disabled={downloadingDraft || !quote.lines.length} title="Descargar PDF de revisión sin emitir consecutivo">
                 <Download size={16} />
-                {issuingPdf ? "Generando..." : "PDF"}
+                {downloadingDraft ? "Generando..." : "Borrador PDF"}
+              </Button>
+              <Button onClick={() => setConfirmIssueOpen(true)} disabled={issuingPdf || Boolean(issueBlocker)} title={issueBlocker || "Emitir cotización y descargar PDF"}>
+                <FileCheck2 size={16} />
+                Emitir cotización
               </Button>
             </div>
           </div>
+          {issueBlocker ? (
+            <div className="quote-requirements-alert" role="status">
+              <TriangleAlert size={16} />
+              <span>{issueBlocker}</span>
+            </div>
+          ) : null}
           {quoteFeedback ? <AppFeedback tone={quoteFeedback.tone} message={quoteFeedback.message} /> : null}
           <div className="quote-parameters">
-            <ReadOnlyField label="ID cliente" value={customer?.customerId} placeholder="Sin cliente" />
-            <ReadOnlyField label="Nombre cliente" value={customer?.displayName} placeholder="Seleccione cliente" />
-            <ReadOnlyField label="Direccion" value={customer?.address} placeholder="Sin direccion" wide />
-            <ReadOnlyField label="Telefono" value={customer?.mobile} placeholder="Sin telefono" />
-            <ReadOnlyField label="ID / Cedula" value={customer?.nationalId} placeholder="Sin ID" />
-            <ReadOnlyField label="Segmento base" value={segment ? `Segmento ${segment}` : undefined} placeholder="Desde cliente" />
-            {inventoryFeatureEnabled ? (
-              <ReadOnlyField label="Filtro inventario" value={inventoryFilterLabel(requireStock, selectedStoreIds, stores)} placeholder="Todo el catalogo" />
-            ) : null}
+            <QuoteDataField label="ID cliente" value={customer?.customerId} placeholder="Sin cliente" />
+            <QuoteDataField label="Nombre cliente" value={customer?.displayName} placeholder="Seleccione cliente" />
+            <QuoteDataField label="Dirección" value={customer?.address} placeholder="Sin dirección" wide />
+            <QuoteDataField label="Teléfono" value={customer?.mobile} placeholder="Sin teléfono" />
+            <QuoteDataField label="ID / Cédula" value={customer?.nationalId} placeholder="Sin ID" />
+            <QuoteDataField label="Segmento base" value={segment ? `Segmento ${segment}` : undefined} placeholder="Desde cliente" />
             <label className="filter-field">
               <span>Segmento a comparar</span>
               <select value={compareSegment} onChange={(event) => setCompareSegment(event.target.value)}>
@@ -247,6 +277,8 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
           onScroll={(event) => syncComparisonScroll("quote", event)}
           onChange={updateItem}
           onRemove={(index) => setItems(items.filter((_, itemIndex) => itemIndex !== index))}
+          onAddSku={() => setSkuModalOpen(true)}
+          onImport={() => setImportModalOpen(true)}
         />
 
         {compareSegment ? (
@@ -265,11 +297,6 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
           catalog={catalog}
           segment={segment}
           inventoryEnabled={inventoryFeatureEnabled}
-          stores={stores}
-          selectedStoreIds={selectedStoreIds}
-          requireStock={requireStock}
-          onStoreSelectionChange={setSelectedStoreIds}
-          onRequireStockChange={setRequireStock}
           onCatalogProductsFound={mergeCatalogProducts}
           onClose={() => setSkuModalOpen(false)}
           onAddItems={(newItems) => setItems((current) => [...current, ...newItems])}
@@ -283,6 +310,16 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
         />
       ) : null}
       {customerModalOpen ? <CustomerSearchModal onClose={() => setCustomerModalOpen(false)} onSelect={selectCustomer} /> : null}
+      {confirmIssueOpen ? (
+        <IssueConfirmModal
+          customer={customer}
+          loading={issuingPdf}
+          quote={quote}
+          segment={segment}
+          onClose={() => setConfirmIssueOpen(false)}
+          onConfirm={handleGeneratePdf}
+        />
+      ) : null}
     </div>
   );
 }
@@ -291,22 +328,15 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "error inesperado";
 }
 
-function defaultStoreSelection(stores: StoreLocation[]) {
-  const cedi = stores.find((store) => store.id === "1041");
-  if (cedi) return [cedi.id];
-  return ["1041"];
+function issueBlockerMessage(customer: Customer | null, segment: string, lineCount: number) {
+  const missing: string[] = [];
+  if (!customer) missing.push("seleccione un cliente");
+  if (!segment) missing.push("confirme el segmento base");
+  if (!lineCount) missing.push("agregue al menos un SKU");
+  return missing.length ? `Para emitir la cotización: ${missing.join(", ")}.` : "";
 }
 
-function inventoryFilterLabel(requireStock: boolean, storeIds: string[], stores: StoreLocation[]) {
-  if (!requireStock) return "Todo el catalogo";
-  const names = storeIds
-    .map((id) => stores.find((store) => store.id === id)?.name ?? `Tienda ${id}`)
-    .slice(0, 2);
-  const suffix = storeIds.length > 2 ? ` +${storeIds.length - 2}` : "";
-  return names.length ? `${names.join(", ")}${suffix}` : "Todas las tiendas";
-}
-
-function ReadOnlyField({
+function QuoteDataField({
   label,
   value,
   placeholder,
@@ -317,11 +347,12 @@ function ReadOnlyField({
   placeholder: string;
   wide?: boolean;
 }) {
+  const displayValue = value || placeholder;
   return (
-    <label className={wide ? "quote-field wide" : "quote-field"}>
+    <div className={wide ? "quote-data-field wide" : "quote-data-field"} aria-label={`${label}: ${displayValue}`}>
       <span>{label}</span>
-      <input readOnly value={value || placeholder} className={value ? "" : "muted-input"} />
-    </label>
+      <strong className={value ? "" : "muted-value"}>{displayValue}</strong>
+    </div>
   );
 }
 
@@ -334,6 +365,8 @@ function QuoteTable({
   onScroll,
   onChange,
   onRemove,
+  onAddSku,
+  onImport,
 }: {
   items: QuoteItem[];
   quote: QuoteSummary;
@@ -343,6 +376,8 @@ function QuoteTable({
   onScroll: (event: UIEvent<HTMLDivElement>) => void;
   onChange: (index: number, item: Partial<QuoteItem>) => void;
   onRemove: (index: number) => void;
+  onAddSku: () => void;
+  onImport: () => void;
 }) {
   return (
     <Card className={isComparing ? "grid-card quote-card quote-card-comparing" : "grid-card quote-card"}>
@@ -383,9 +418,29 @@ function QuoteTable({
                   </td>
                   <td>{formatCurrency(line.unitPrice)}</td>
                   <td><strong>{formatCurrency(line.finalTotal)}</strong></td>
-                  <td><button className="icon-btn" title="Eliminar linea" onClick={() => onRemove(index)}><Trash2 size={16} /></button></td>
+                  <td><button className="icon-btn" title="Eliminar línea" onClick={() => onRemove(index)}><Trash2 size={16} /></button></td>
                 </tr>
               ))}
+              {!quote.lines.length ? (
+                <tr className="quote-empty-row">
+                  <td colSpan={5}>
+                    <div className="quote-empty-state">
+                      <strong>Sin SKU agregados</strong>
+                      <span>Agregue productos para calcular precios, ofertas y totales.</span>
+                      <div>
+                        <Button variant="outline" onClick={onImport}>
+                          <FileUp size={16} />
+                          Importar SKU
+                        </Button>
+                        <Button onClick={onAddSku}>
+                          <PackagePlus size={16} />
+                          Agregar SKU
+                        </Button>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              ) : null}
             </tbody>
           </table>
         </div>
@@ -416,7 +471,7 @@ function ComparePanel({
       <CardContent>
         <div className="section-head">
           <div>
-            <h2>Comparacion segmento {compareSegment}</h2>
+            <h2>Comparación segmento {compareSegment}</h2>
             <span>Precio por SKU contra el segmento base.</span>
           </div>
         </div>
@@ -463,6 +518,89 @@ function QuoteTotals({ quote, label }: { quote: QuoteSummary; label: string }) {
       <p>Subtotal <strong>{formatCurrency(quote.subtotalFinal)}</strong></p>
       <p>IVA <strong>{formatCurrency(quote.tax)}</strong></p>
       <p>Total con IVA <strong>{formatCurrency(quote.totalWithTax)}</strong></p>
+    </div>
+  );
+}
+
+function QuoteSummaryCard({ quote }: { quote: QuoteSummary }) {
+  return (
+    <Card className="quote-summary-card">
+      <CardContent className="quote-summary-content">
+        <QuoteSummaryStat title="Lista" value={formatCurrency(quote.subtotalList)} icon={ReceiptText} />
+        <QuoteSummaryStat title="Final" value={formatCurrency(quote.subtotalFinal)} icon={Search} />
+        <QuoteSummaryStat title="Ahorro" value={formatCurrency(quote.savings)} icon={GitCompareArrows} />
+        <QuoteSummaryStat title="Líneas" value={String(quote.lines.length)} icon={FileUp} />
+      </CardContent>
+    </Card>
+  );
+}
+
+function QuoteSummaryStat({
+  icon: Icon,
+  title,
+  value,
+}: {
+  icon: LucideIcon;
+  title: string;
+  value: string;
+}) {
+  return (
+    <div className="quote-summary-stat">
+      <Icon size={16} />
+      <span>{title}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function IssueConfirmModal({
+  customer,
+  loading,
+  quote,
+  segment,
+  onClose,
+  onConfirm,
+}: {
+  customer: Customer | null;
+  loading: boolean;
+  quote: QuoteSummary;
+  segment: string;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Confirmar emisión">
+      <section className="issue-confirm-modal">
+        <header className="modal-head">
+          <div>
+            <h2>Emitir cotización</h2>
+            <span>Esta acción asigna consecutivo y descarga el PDF oficial.</span>
+          </div>
+          <button className="icon-btn" title="Cerrar" onClick={onClose} disabled={loading}>
+            <X size={17} />
+          </button>
+        </header>
+        <div className="issue-confirm-body">
+          <div className="issue-confirm-summary">
+            <span>Cliente</span>
+            <strong>{customer?.displayName ?? "Sin cliente"}</strong>
+            <span>Segmento</span>
+            <strong>{segment || "-"}</strong>
+            <span>Líneas</span>
+            <strong>{quote.lines.length}</strong>
+            <span>Total con IVA</span>
+            <strong>{formatCurrency(quote.totalWithTax)}</strong>
+          </div>
+          <p>Revise que el cliente, segmento y productos sean correctos antes de emitir.</p>
+          <div className="modal-actions split">
+            <Button variant="outline" onClick={onClose} disabled={loading}>Cancelar</Button>
+            <Button onClick={onConfirm} disabled={loading}>
+              <FileCheck2 size={16} />
+              {loading ? "Emitiendo..." : "Confirmar emisión"}
+            </Button>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
