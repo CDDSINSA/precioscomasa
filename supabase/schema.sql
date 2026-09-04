@@ -232,7 +232,7 @@ create table if not exists public.promotion_offer_sku_settings (
   threshold_type text not null default 'EXACT',
   updated_at timestamptz not null default now(),
   primary key (promotion_id, offer_id, sku, segment),
-  check (threshold_quantity >= 1),
+  check (threshold_quantity >= 0),
   check (threshold_type in ('EXACT', 'MINIMUM'))
 );
 
@@ -251,7 +251,7 @@ alter table public.promotion_offer_sku_settings alter column updated_at set not 
 alter table public.promotion_offer_sku_settings drop constraint if exists promotion_offer_sku_settings_quantity_check;
 alter table public.promotion_offer_sku_settings
   add constraint promotion_offer_sku_settings_quantity_check
-  check (threshold_quantity >= 1);
+  check (threshold_quantity >= 0);
 alter table public.promotion_offer_sku_settings drop constraint if exists promotion_offer_sku_settings_threshold_type_check;
 alter table public.promotion_offer_sku_settings
   add constraint promotion_offer_sku_settings_threshold_type_check

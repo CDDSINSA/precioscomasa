@@ -37,7 +37,7 @@ create table if not exists public.promotion_offer_sku_settings (
 alter table public.promotion_offer_sku_settings drop constraint if exists promotion_offer_sku_settings_quantity_check;
 alter table public.promotion_offer_sku_settings
   add constraint promotion_offer_sku_settings_quantity_check
-  check (threshold_quantity >= 1);
+  check (threshold_quantity >= 0);
 alter table public.promotion_offer_sku_settings drop constraint if exists promotion_offer_sku_settings_threshold_type_check;
 alter table public.promotion_offer_sku_settings
   add constraint promotion_offer_sku_settings_threshold_type_check
@@ -223,7 +223,11 @@ begin
       rows.*,
       coalesce(offer_settings.allow_stacking, false) as resolved_allow_stacking,
       coalesce(sku_settings.threshold_quantity, 1) as resolved_threshold_quantity,
-      coalesce(sku_settings.threshold_type, 'EXACT') as resolved_threshold_type
+      case
+        when sku_settings.threshold_type is not null then sku_settings.threshold_type
+        when rows.offer_type = 'TIERED_DISCOUNT' then 'MINIMUM'
+        else 'EXACT'
+      end as resolved_threshold_type
     from public.promotion_import_rows rows
     join public.promotions promos on promos.id = rows.promotion_id
     join incoming_promotions incoming on incoming.id = rows.promotion_id

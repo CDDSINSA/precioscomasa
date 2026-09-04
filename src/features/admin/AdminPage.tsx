@@ -29,7 +29,7 @@ import {
   type PromotionSyncMode,
   type RemoteDataMetrics,
 } from "../../services/supabase";
-import type { Customer, ImportedPromotionRow, InventoryRecord, Product, StoreLocation, ThresholdType } from "../../types/domain";
+import type { Customer, ImportedPromotionRow, InventoryRecord, OfferType, Product, StoreLocation, ThresholdType } from "../../types/domain";
 
 type ProgressState = {
   title: string;
@@ -143,9 +143,11 @@ export function AdminPage() {
   async function saveOfferThreshold(row: OfferConfigurationRow) {
     const key = `threshold-${row.ruleId}`;
     setSavingConfigKey(key);
+    const thresholdQuantity = Math.max(0, Number(row.thresholdQuantity) || 0);
     const normalizedRow = {
       ...row,
-      thresholdQuantity: Math.max(1, Number(row.thresholdQuantity) || 1),
+      thresholdQuantity,
+      thresholdType: row.thresholdType,
     };
     const result = await updateOfferSkuThresholdSetting(normalizedRow);
     setSavingConfigKey("");
@@ -155,7 +157,10 @@ export function AdminPage() {
       return;
     }
 
-    patchOfferConfigRow(row.ruleId, { thresholdQuantity: normalizedRow.thresholdQuantity });
+    patchOfferConfigRow(row.ruleId, {
+      thresholdQuantity: normalizedRow.thresholdQuantity,
+      thresholdType: normalizedRow.thresholdType,
+    });
     setMessage(result.message);
   }
 
@@ -602,9 +607,9 @@ function OfferConfigurationPanel({
                   <td>
                     <input
                       type="number"
-                      min="1"
+                      min="0"
                       value={row.thresholdQuantity}
-                      onChange={(event) => onThresholdChange(row.ruleId, { thresholdQuantity: Math.max(1, Number(event.target.value) || 1) })}
+                      onChange={(event) => onThresholdChange(row.ruleId, { thresholdQuantity: Math.max(0, Number(event.target.value) || 0) })}
                     />
                     <small>Reporte: {row.importedQuantity ?? "-"}</small>
                   </td>

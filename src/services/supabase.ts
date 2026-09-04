@@ -845,7 +845,7 @@ export async function loadOfferRulesForSkus(skus: string[], segments: string[]) 
   const promotionIds = [...promotionMap.keys()];
   if (!promotionIds.length) return [];
 
-  const ruleSegments = unique([...segments.filter(Boolean), " - "]);
+  const ruleSegments = segmentLookupValues(segments);
   const baseRows = await fetchOfferRuleRows(cleanSkus, ruleSegments, promotionIds);
   const kitRows = await fetchKitCompanionRows(baseRows, ruleSegments, promotionIds);
   return mapOfferRules([...baseRows, ...kitRows], promotionMap);
@@ -942,7 +942,7 @@ export async function updateOfferSkuThresholdSetting(row: OfferConfigurationRow)
   }
 
   const updatedAt = new Date().toISOString();
-  const thresholdQuantity = Math.max(1, Number(row.thresholdQuantity) || 1);
+  const thresholdQuantity = Math.max(0, Number(row.thresholdQuantity) || 0);
   const thresholdType = toThresholdType(row.thresholdType);
   const setting = await supabase
     .from("promotion_offer_sku_settings")
@@ -1148,7 +1148,7 @@ function mapOfferRules(rows: PromotionRuleRow[], promotions: Map<string, Promoti
       fixedPrice: row.fixed_price === null ? undefined : Number(row.fixed_price),
       discountPercent: row.discount_percent === null ? undefined : Number(row.discount_percent),
       discountType: row.discount_type ?? undefined,
-      thresholdQuantity: Number(row.threshold_quantity ?? 1) || 1,
+      thresholdQuantity: toThresholdQuantity(row.threshold_quantity),
       thresholdType: toThresholdType(row.threshold_type),
       allowStacking: row.allow_stacking ?? false,
       configurationNote: row.configuration_note ?? undefined,
@@ -1169,7 +1169,7 @@ function mapOfferConfigurationRows(rows: PromotionRuleRow[], promotions: Map<str
       sku: row.sku!,
       segment: row.segment ?? " - ",
       importedQuantity: Number(row.min_quantity ?? 0) || undefined,
-      thresholdQuantity: Number(row.threshold_quantity ?? 1) || 1,
+      thresholdQuantity: toThresholdQuantity(row.threshold_quantity),
       thresholdType: toThresholdType(row.threshold_type),
       allowStacking: row.allow_stacking ?? false,
       discountPercent: row.discount_percent === null ? undefined : Number(row.discount_percent),
@@ -1563,8 +1563,22 @@ function normalizeSearchValue(value: string | undefined) {
     .replace(/\p{Diacritic}/gu, "");
 }
 
+function segmentLookupValues(segments: string[]) {
+  const values = new Set([" - ", "-"]);
+  segments.map((segment) => segment.trim()).filter(Boolean).forEach((segment) => {
+    values.add(segment);
+    if (segment === "-") values.add(" - ");
+  });
+  return [...values];
+}
+
 function toThresholdType(value: unknown): ThresholdType {
   return value === "MINIMUM" ? "MINIMUM" : "EXACT";
+}
+
+function toThresholdQuantity(value: unknown) {
+  const quantity = Number(value ?? 1);
+  return Number.isFinite(quantity) ? Math.max(0, quantity) : 1;
 }
 
 async function countRows(table: "promotions" | "customers" | "products" | "inventory" | "stores") {

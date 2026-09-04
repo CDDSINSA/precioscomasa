@@ -7,6 +7,7 @@ import {
   availableOfferGroups,
   estimateLineTotal,
   estimateOfferGroupUnitPrice,
+  ruleMatchesQuantity,
   sampleOfferRules,
   sortOfferGroupsByUnitPrice,
 } from "../../services/promotions";
@@ -364,7 +365,7 @@ export function SkuSearchModal({
                 <div className="offer-list">
                   {offerLoading ? <p className="empty-copy">Cargando ofertas del segmento...</p> : null}
                   {!offerLoading && offerGroups.map((offerGroup) => {
-                    const applies = offerGroup.rules.every((offer) => !offer.minQuantity || quantity >= offer.minQuantity);
+                    const applies = offerGroup.rules.every((offer) => ruleMatchesQuantity(offer, quantity));
                     return (
                       <button
                         className={offerGroup.key === selectedOffer?.key ? "offer-row selected" : "offer-row"}
@@ -506,7 +507,7 @@ function thresholdLabel(offers: OfferRule[]) {
 }
 
 function benefitLabel(offer: OfferRule) {
-  if (offer.fixedPrice) return `Precio ${formatCurrency(offer.fixedPrice)}`;
+  if (offer.fixedPrice !== undefined) return `Precio ${formatCurrency(offer.fixedPrice)}`;
   if (offer.discountPercent) return `${offer.discountPercent}% descuento`;
   return offer.discountType ?? "Beneficio configurado";
 }

@@ -51,7 +51,7 @@ export const sampleOfferRules: OfferRule[] = [
     sku: "140862737",
     segment: " - ",
     thresholdQuantity: 1,
-    thresholdType: "EXACT",
+    thresholdType: "MINIMUM",
     allowStacking: false,
     discountPercent: 80,
   },
@@ -95,7 +95,7 @@ export const sampleOfferRules: OfferRule[] = [
     sku: "152281753",
     segment: "1002",
     thresholdQuantity: 1,
-    thresholdType: "EXACT",
+    thresholdType: "MINIMUM",
     allowStacking: false,
     fixedPrice: 9600,
   },
@@ -163,6 +163,15 @@ export function eligibleRules(rules: OfferRule[], sku: string, segment: string, 
     const kitSupported = rule.type !== "KIT_OFFER" || getKitRules(rules, rule, segment).length < 4;
     return rule.sku === sku && segmentMatches && quantityMatches && kitSupported;
   });
+}
+
+export function ruleMatchesQuantity(rule: OfferRule, quantity: number) {
+  const thresholdQuantity = rule.thresholdQuantity ?? rule.minQuantity ?? 1;
+  const thresholdType = effectiveThresholdType(rule, thresholdQuantity);
+  if (isSingleUnitFixedPriceCandidate(rule, thresholdQuantity, thresholdType)) {
+    return quantity >= thresholdQuantity;
+  }
+  return thresholdType === "MINIMUM" ? quantity >= thresholdQuantity : quantity === thresholdQuantity;
 }
 
 export function rulesForSkuSegment(rules: OfferRule[], sku: string, segment: string) {
@@ -239,10 +248,12 @@ export function ruleAppliesToSegment(rule: Pick<OfferRule, "segment">, segment: 
   return rule.segment === segment || rule.segment.trim() === "-";
 }
 
-function ruleMatchesQuantity(rule: OfferRule, quantity: number) {
-  const thresholdQuantity = rule.thresholdQuantity ?? rule.minQuantity ?? 1;
-  const thresholdType = rule.thresholdType ?? "EXACT";
-  return thresholdType === "MINIMUM" ? quantity >= thresholdQuantity : quantity === thresholdQuantity;
+function effectiveThresholdType(rule: OfferRule, thresholdQuantity: number) {
+  return rule.thresholdType ?? (rule.type === "TIERED_DISCOUNT" ? "MINIMUM" : "EXACT");
+}
+
+function isSingleUnitFixedPriceCandidate(rule: OfferRule, thresholdQuantity: number, thresholdType: string) {
+  return rule.type === "FIXED_QTY_PRICE" && thresholdQuantity <= 1 && thresholdType === "EXACT";
 }
 
 function getKitRules(rules: OfferRule[], offer: OfferRule, segment: string) {
