@@ -29,7 +29,7 @@ import {
   type PromotionSyncMode,
   type RemoteDataMetrics,
 } from "../../services/supabase";
-import type { Customer, ImportedPromotionRow, InventoryRecord, OfferType, Product, StoreLocation, ThresholdType } from "../../types/domain";
+import type { Customer, ImportedPromotionRow, InventoryRecord, Product, StoreLocation, ThresholdType } from "../../types/domain";
 
 type ProgressState = {
   title: string;
@@ -143,7 +143,7 @@ export function AdminPage() {
   async function saveOfferThreshold(row: OfferConfigurationRow) {
     const key = `threshold-${row.ruleId}`;
     setSavingConfigKey(key);
-    const thresholdQuantity = Math.max(0, Number(row.thresholdQuantity) || 0);
+    const thresholdQuantity = Math.max(1, Number(row.thresholdQuantity) || 1);
     const normalizedRow = {
       ...row,
       thresholdQuantity,
@@ -551,6 +551,10 @@ function OfferConfigurationPanel({
             <span>ID oferta</span>
             <input value={filters.offerId ?? ""} onChange={(event) => onFilterChange("offerId", event.target.value)} placeholder="Ej. 62010" />
           </label>
+          <label className="filter-field compact">
+            <span>SKU</span>
+            <input value={filters.sku ?? ""} onChange={(event) => onFilterChange("sku", event.target.value)} placeholder="Código exacto" />
+          </label>
           <Button onClick={onSearch} disabled={loading}>
             <Search size={16} />
             {loading ? "Buscando..." : "Buscar"}
@@ -583,16 +587,18 @@ function OfferConfigurationPanel({
             {rows.map((row) => {
               const combineKey = `combine-${row.promotionId}-${row.offerId}`;
               const thresholdKey = `threshold-${row.ruleId}`;
+              const minimumThreshold = zeroThresholdAllowed(row.type) ? 0 : 1;
               return (
                 <tr key={row.ruleId}>
                   <td>
                     <strong>{row.promotionId}</strong>
                     <span>{row.promotionName}</span>
+                    <span>{row.startsAt ?? "Sin inicio"} — {row.endsAt ?? "Sin vencimiento"}</span>
                   </td>
                   <td>{row.offerId}</td>
                   <td>{row.sku}</td>
                   <td><Badge tone="info">{offerTypeLabel(row.type)}</Badge></td>
-                  <td>{row.segment.trim() === "-" ? "Todos" : row.segment}</td>
+                  <td title={`Segmento almacenado: ${JSON.stringify(row.segment)}`}>{row.segment.trim() === "-" ? "Todos" : row.segment}</td>
                   <td>
                     <label className="inline-toggle">
                       <input
@@ -607,15 +613,16 @@ function OfferConfigurationPanel({
                   <td>
                     <input
                       type="number"
-                      min="0"
+                      min={minimumThreshold}
                       value={row.thresholdQuantity}
-                      onChange={(event) => onThresholdChange(row.ruleId, { thresholdQuantity: Math.max(0, Number(event.target.value) || 0) })}
+                      onChange={(event) => onThresholdChange(row.ruleId, { thresholdQuantity: Math.max(minimumThreshold, Number(event.target.value) || 0) })}
                     />
                     <small>Reporte: {row.importedQuantity ?? "-"}</small>
                   </td>
                   <td>
                     <select
-                      value={row.thresholdType}
+                      value={zeroThresholdAllowed(row.type) ? "MINIMUM" : row.thresholdType}
+                      disabled={zeroThresholdAllowed(row.type)}
                       onChange={(event) => onThresholdChange(row.ruleId, { thresholdType: event.target.value as ThresholdType })}
                     >
                       <option value="EXACT">Exacta</option>
@@ -652,6 +659,10 @@ function offerTypeLabel(type: string) {
     KIT_OFFER: "Kit",
   };
   return labels[type] ?? type;
+}
+
+function zeroThresholdAllowed(type: string) {
+  return type === "LINE_ITEM_DISCOUNT" || type === "FIXED_QTY_PRICE";
 }
 
 function offerValueLabel(row: OfferConfigurationRow) {

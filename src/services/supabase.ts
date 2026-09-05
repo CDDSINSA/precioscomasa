@@ -17,6 +17,7 @@ import type {
 } from "../types/domain";
 import { updateStoredDataStatus } from "./dataStatus";
 import { sampleOfferRules } from "./promotions";
+import { promotionSegmentFilter } from "./promotionFilters";
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabasePublishableKey =
@@ -151,12 +152,15 @@ type IssueQuoteOptions = {
 export type OfferConfigurationFilters = {
   promotionId?: string;
   offerId?: string;
+  sku?: string;
 };
 
 export type OfferConfigurationRow = {
   ruleId: string;
   promotionId: string;
   promotionName: string;
+  startsAt?: string;
+  endsAt?: string;
   offerId: string;
   type: OfferType;
   sku: string;
@@ -857,12 +861,13 @@ export async function searchOfferConfigurations(
 ): Promise<OfferConfigurationResult> {
   const promotionQuery = filters.promotionId?.trim();
   const offerQuery = filters.offerId?.trim();
+  const skuQuery = filters.sku?.trim();
 
   if (!supabase) {
     return {
       ok: true,
       rows: sampleOfferRules
-        .filter((rule) => matchesConfigFilter(rule.promotionId, promotionQuery) && matchesConfigFilter(rule.id, offerQuery))
+        .filter((rule) => matchesConfigFilter(rule.promotionId, promotionQuery) && matchesConfigFilter(rule.id, offerQuery) && (!skuQuery || rule.sku === skuQuery))
         .slice(0, limit)
         .map((rule) => ({
           ruleId: `${rule.promotionId}-${rule.id}-${rule.sku}-${rule.segment}`,
@@ -873,8 +878,8 @@ export async function searchOfferConfigurations(
           sku: rule.sku,
           segment: rule.segment,
           importedQuantity: rule.minQuantity,
-          thresholdQuantity: rule.thresholdQuantity ?? 1,
-          thresholdType: rule.thresholdType ?? "EXACT",
+          thresholdQuantity: zeroThresholdOfferType(rule.type) ? 0 : rule.thresholdQuantity ?? 1,
+          thresholdType: zeroThresholdOfferType(rule.type) ? "MINIMUM" : rule.thresholdType ?? "EXACT",
           allowStacking: rule.allowStacking ?? false,
           discountPercent: rule.discountPercent,
           fixedPrice: rule.fixedPrice,
@@ -892,6 +897,7 @@ export async function searchOfferConfigurations(
 
   if (promotionQuery) request = request.ilike("promotion_id", `%${escapePostgrestPattern(promotionQuery)}%`);
   if (offerQuery) request = request.ilike("external_offer_id", `%${escapePostgrestPattern(offerQuery)}%`);
+  if (skuQuery) request = request.eq("sku", skuQuery);
 
   const { data, error } = await request;
   if (error || !data) {
@@ -943,7 +949,7 @@ export async function updateOfferSkuThresholdSetting(row: OfferConfigurationRow)
 
   const updatedAt = new Date().toISOString();
   const thresholdQuantity = Math.max(0, Number(row.thresholdQuantity) || 0);
-  const thresholdType = toThresholdType(row.thresholdType);
+  const thresholdType = minimumThresholdType(row.type, row.thresholdType);
   const setting = await supabase
     .from("promotion_offer_sku_settings")
     .upsert({
@@ -1108,7 +1114,7 @@ async function fetchOfferRuleRows(skus: string[], segments: string[], promotionI
     .select("id,external_offer_id,promotion_id,offer_type,sku,segment,min_quantity,fixed_price,discount_percent,discount_type,configuration_note,allow_stacking,threshold_quantity,threshold_type")
     .eq("is_active", true)
     .in("promotion_id", promotionIds)
-    .in("segment", segments)
+    .filter("segment", "in", promotionSegmentFilter(segments))
     .in("sku", skus);
 
   return error || !data ? [] : (data as PromotionRuleRow[]);
@@ -1125,7 +1131,7 @@ async function fetchKitCompanionRows(rows: PromotionRuleRow[], segments: string[
     .select("id,external_offer_id,promotion_id,offer_type,sku,segment,min_quantity,fixed_price,discount_percent,discount_type,configuration_note,allow_stacking,threshold_quantity,threshold_type")
     .eq("is_active", true)
     .in("promotion_id", promotionIds)
-    .in("segment", segments)
+    .filter("segment", "in", promotionSegmentFilter(segments))
     .in("external_offer_id", kitOfferIds);
 
   return error || !data ? [] : (data as PromotionRuleRow[]);
@@ -1144,9 +1150,9 @@ function mapOfferRules(rows: PromotionRuleRow[], promotions: Map<string, Promoti
       type: row.offer_type!,
       sku: row.sku!,
       segment: row.segment ?? " - ",
-      minQuantity: Number(row.min_quantity ?? 0) || undefined,
-      fixedPrice: row.fixed_price === null ? undefined : Number(row.fixed_price),
-      discountPercent: row.discount_percent === null ? undefined : Number(row.discount_percent),
+      minQuantity: optionalNumber(row.min_quantity),
+      fixedPrice: optionalNumber(row.fixed_price),
+      discountPercent: optionalNumber(row.discount_percent),
       discountType: row.discount_type ?? undefined,
       thresholdQuantity: toThresholdQuantity(row.threshold_quantity),
       thresholdType: toThresholdType(row.threshold_type),
@@ -1165,15 +1171,17 @@ function mapOfferConfigurationRows(rows: PromotionRuleRow[], promotions: Map<str
       promotionId: row.promotion_id!,
       promotionName: promotions.get(row.promotion_id!)?.name ?? row.promotion_id!,
       offerId: row.external_offer_id!,
+      startsAt: promotions.get(row.promotion_id!)?.starts_at ?? undefined,
+      endsAt: promotions.get(row.promotion_id!)?.ends_at ?? undefined,
       type: row.offer_type!,
       sku: row.sku!,
       segment: row.segment ?? " - ",
-      importedQuantity: Number(row.min_quantity ?? 0) || undefined,
+      importedQuantity: optionalNumber(row.min_quantity),
       thresholdQuantity: toThresholdQuantity(row.threshold_quantity),
       thresholdType: toThresholdType(row.threshold_type),
       allowStacking: row.allow_stacking ?? false,
-      discountPercent: row.discount_percent === null ? undefined : Number(row.discount_percent),
-      fixedPrice: row.fixed_price === null ? undefined : Number(row.fixed_price),
+      discountPercent: optionalNumber(row.discount_percent),
+      fixedPrice: optionalNumber(row.fixed_price),
       discountType: row.discount_type ?? undefined,
     }));
 }
@@ -1576,9 +1584,23 @@ function toThresholdType(value: unknown): ThresholdType {
   return value === "MINIMUM" ? "MINIMUM" : "EXACT";
 }
 
+function minimumThresholdType(type: OfferType, value: unknown): ThresholdType {
+  return zeroThresholdOfferType(type) ? "MINIMUM" : toThresholdType(value);
+}
+
+function zeroThresholdOfferType(type: OfferType) {
+  return type === "LINE_ITEM_DISCOUNT" || type === "FIXED_QTY_PRICE";
+}
+
 function toThresholdQuantity(value: unknown) {
-  const quantity = Number(value ?? 1);
-  return Number.isFinite(quantity) ? Math.max(0, quantity) : 1;
+  const quantity = Number(value ?? 0);
+  return Number.isFinite(quantity) && quantity >= 0 ? quantity : 0;
+}
+
+function optionalNumber(value: unknown) {
+  if (value === null || value === undefined || value === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 async function countRows(table: "promotions" | "customers" | "products" | "inventory" | "stores") {

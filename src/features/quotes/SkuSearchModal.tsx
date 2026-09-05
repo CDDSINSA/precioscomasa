@@ -7,6 +7,7 @@ import {
   availableOfferGroups,
   estimateLineTotal,
   estimateOfferGroupUnitPrice,
+  minimumQuantityForRule,
   ruleMatchesQuantity,
   sampleOfferRules,
   sortOfferGroupsByUnitPrice,
@@ -502,7 +503,7 @@ function buildDivisionOptions(departments: ProductDepartment[]) {
 }
 
 function thresholdLabel(offers: OfferRule[]) {
-  const minQuantity = Math.max(...offers.map((offer) => offer.minQuantity ?? 0));
+  const minQuantity = Math.max(...offers.map(minimumQuantityForRule));
   return minQuantity > 0 ? `Desde ${minQuantity} unidades` : "Sin mínimo";
 }
 

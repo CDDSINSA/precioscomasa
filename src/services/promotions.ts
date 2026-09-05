@@ -166,12 +166,14 @@ export function eligibleRules(rules: OfferRule[], sku: string, segment: string, 
 }
 
 export function ruleMatchesQuantity(rule: OfferRule, quantity: number) {
-  const thresholdQuantity = rule.thresholdQuantity ?? rule.minQuantity ?? 1;
-  const thresholdType = effectiveThresholdType(rule, thresholdQuantity);
-  if (isSingleUnitFixedPriceCandidate(rule, thresholdQuantity, thresholdType)) {
-    return quantity >= thresholdQuantity;
-  }
+  if (!Number.isFinite(quantity) || quantity <= 0) return false;
+  const thresholdQuantity = minimumQuantityForRule(rule);
+  const thresholdType = effectiveThresholdType(rule);
   return thresholdType === "MINIMUM" ? quantity >= thresholdQuantity : quantity === thresholdQuantity;
+}
+
+export function minimumQuantityForRule(rule: OfferRule) {
+  return effectiveThresholdQuantity(rule);
 }
 
 export function rulesForSkuSegment(rules: OfferRule[], sku: string, segment: string) {
@@ -221,15 +223,28 @@ export function estimateLineTotal(listPrice: number, quantity: number, rule?: Of
 export function estimateUnitPrice(listPrice: number, rule?: OfferRule) {
   if (!rule) return listPrice;
 
-  if ((rule.type === "FIXED_QTY_PRICE" || rule.type === "KIT_OFFER") && rule.fixedPrice !== undefined) {
+  // RMS describes the benefit separately from the offer's quantity conditions.
+  const discountType = rule.discountType?.trim().toUpperCase();
+  if (discountType === "OVERRIDE_PRICE" || discountType === "PRICE_OVERRIDE") {
+    return validPrice(rule.fixedPrice) ? rule.fixedPrice : listPrice;
+  }
+  if (discountType === "PERCENT_OFF") {
+    return percentOffPrice(listPrice, rule.discountPercent);
+  }
+
+  if (rule.type === "FIXED_QTY_PRICE" && rule.fixedPrice !== undefined) {
+    return validPrice(rule.fixedPrice) ? fixedQtyUnitPrice(rule) : listPrice;
+  }
+
+  if (rule.type === "KIT_OFFER" && rule.fixedPrice !== undefined) {
     return rule.fixedPrice;
   }
 
   if (
-    (rule.type === "LINE_ITEM_DISCOUNT" || rule.type === "TIERED_DISCOUNT" || rule.type === "KIT_OFFER") &&
+    (rule.type === "LINE_ITEM_DISCOUNT" || rule.type === "TIERED_DISCOUNT" || rule.type === "FIXED_QTY_PRICE" || rule.type === "KIT_OFFER") &&
     rule.discountPercent
   ) {
-    return listPrice * (1 - rule.discountPercent / 100);
+    return percentOffPrice(listPrice, rule.discountPercent);
   }
 
   return listPrice;
@@ -248,12 +263,39 @@ export function ruleAppliesToSegment(rule: Pick<OfferRule, "segment">, segment: 
   return rule.segment === segment || rule.segment.trim() === "-";
 }
 
-function effectiveThresholdType(rule: OfferRule, thresholdQuantity: number) {
-  return rule.thresholdType ?? (rule.type === "TIERED_DISCOUNT" ? "MINIMUM" : "EXACT");
+function effectiveThresholdType(rule: OfferRule) {
+  if (rule.type === "LINE_ITEM_DISCOUNT" || rule.type === "FIXED_QTY_PRICE" || rule.type === "TIERED_DISCOUNT") {
+    return "MINIMUM";
+  }
+
+  return rule.thresholdType === "MINIMUM" ? "MINIMUM" : "EXACT";
 }
 
-function isSingleUnitFixedPriceCandidate(rule: OfferRule, thresholdQuantity: number, thresholdType: string) {
-  return rule.type === "FIXED_QTY_PRICE" && thresholdQuantity <= 1 && thresholdType === "EXACT";
+function effectiveThresholdQuantity(rule: OfferRule) {
+  // Zero explicitly means no minimum for these offers, including fractional units.
+  if ((rule.type === "LINE_ITEM_DISCOUNT" || rule.type === "FIXED_QTY_PRICE") && rule.thresholdQuantity === 0) {
+    return 0;
+  }
+  const configuredQuantity = Number(rule.thresholdQuantity ?? 0);
+  const importedQuantity = Number(rule.minQuantity ?? 0);
+  const quantity = configuredQuantity > 0 ? configuredQuantity : importedQuantity > 0 ? importedQuantity : 1;
+  return Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+}
+
+function fixedQtyUnitPrice(rule: OfferRule) {
+  const fixedPrice = Number(rule.fixedPrice ?? 0);
+  const quantity = effectiveThresholdQuantity(rule);
+  return quantity > 1 ? fixedPrice / quantity : fixedPrice;
+}
+
+function validPrice(value: number | undefined): value is number {
+  return value !== undefined && Number.isFinite(value) && value >= 0;
+}
+
+function percentOffPrice(listPrice: number, percent: number | undefined) {
+  return percent !== undefined && Number.isFinite(percent) && percent >= 0 && percent <= 100
+    ? listPrice * (1 - percent / 100)
+    : listPrice;
 }
 
 function getKitRules(rules: OfferRule[], offer: OfferRule, segment: string) {

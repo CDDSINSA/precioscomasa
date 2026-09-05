@@ -126,10 +126,10 @@ function parsePromotionRows(rows: Record<string, unknown>[]): ImportedPromotionR
 
   return rows.flatMap((row) => {
     const data = normalizeRow(row);
-    const type = String(pick(data, ["tipo oferta"]) ?? "LINE_ITEM_DISCOUNT").trim() as OfferType;
+    const type = String(pick(data, ["tipo oferta"]) ?? "LINE_ITEM_DISCOUNT").trim().toUpperCase() as OfferType;
     if (!validTypes.includes(type)) return [];
 
-    const discountType = String(pick(data, ["tipo de descuento"]) ?? "").trim();
+    const discountType = String(pick(data, ["tipo de descuento"]) ?? "").trim().toUpperCase();
     const detailAmount = toNumber(pick(data, ["detail change amount"]));
     const sellingUnitRetail = toNumber(pick(data, ["selling unit retail"]));
 
@@ -144,7 +144,9 @@ function parsePromotionRows(rows: Record<string, unknown>[]): ImportedPromotionR
       description: String(pick(data, ["descripcion de articulo", "descripci n de articulo"]) ?? "").trim(),
       type,
       quantity: toNumber(pick(data, ["cantidad"])),
-      fixedPrice: discountType === "OVERRIDE_PRICE" ? detailAmount ?? sellingUnitRetail : sellingUnitRetail,
+      fixedPrice: discountType === "OVERRIDE_PRICE" || discountType === "PRICE_OVERRIDE"
+        ? detailAmount ?? sellingUnitRetail
+        : sellingUnitRetail,
       discountPercent: toNumber(pick(data, ["detail change percent"])),
       discountType,
       segment: normalizeSegment(pick(data, ["segmento"])),
