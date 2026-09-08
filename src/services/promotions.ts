@@ -1,4 +1,5 @@
 import type { ImportedPromotionRow, OfferRule, Promotion } from "../types/domain";
+import { dealSkus } from "./dealConfig";
 
 export type AvailableOfferGroup = {
   key: string;
@@ -160,8 +161,7 @@ export function eligibleRules(rules: OfferRule[], sku: string, segment: string, 
   return rules.filter((rule) => {
     const segmentMatches = ruleAppliesToSegment(rule, segment);
     const quantityMatches = ruleMatchesQuantity(rule, quantity);
-    const kitSupported = rule.type !== "KIT_OFFER" || getKitRules(rules, rule, segment).length < 4;
-    return rule.sku === sku && segmentMatches && quantityMatches && kitSupported;
+    return rule.sku === sku && segmentMatches && quantityMatches && rule.type !== "KIT_OFFER" && (!rule.deal || rule.deal.kind === "UNIT");
   });
 }
 
@@ -177,7 +177,7 @@ export function minimumQuantityForRule(rule: OfferRule) {
 }
 
 export function rulesForSkuSegment(rules: OfferRule[], sku: string, segment: string) {
-  return rules.filter((rule) => rule.sku === sku && ruleAppliesToSegment(rule, segment));
+  return rules.filter((rule) => (rule.sku === sku || (rule.deal && dealSkus(rule.deal, rule.sku).includes(sku))) && ruleAppliesToSegment(rule, segment));
 }
 
 export function availableOfferGroups(rules: OfferRule[], sku: string, segment: string): AvailableOfferGroup[] {
@@ -186,15 +186,19 @@ export function availableOfferGroups(rules: OfferRule[], sku: string, segment: s
   rulesForSkuSegment(rules, sku, segment).forEach((rule) => {
     const kitRules = rule.type === "KIT_OFFER" ? getKitRules(rules, rule, segment) : [rule];
     const uniqueSkuCount = new Set(kitRules.map((kitRule) => kitRule.sku)).size;
-    if (rule.type === "KIT_OFFER" && uniqueSkuCount >= 4) return;
 
-    const key = rule.type === "KIT_OFFER" ? kitGroupKey(rule) : `${rule.promotionId}|${rule.id}|${rule.sku}|${rule.segment}`;
+    const key = rule.type === "KIT_OFFER" ? kitGroupKey(rule) : `${rule.promotionId}|${rule.id}|${rule.sku}|${rule.segment}|${rule.minQuantity ?? 0}`;
+    if (rule.type === "KIT_OFFER") {
+      if (uniqueSkuCount < 2) return;
+      const hasConfiguredThreshold = kitRules.some(r => typeof r.thresholdQuantity === "number" && r.thresholdQuantity > 0 && !!r.thresholdType);
+      if (!rule.deal && uniqueSkuCount >= 4 && !hasConfiguredThreshold) return;
+    }
     if (!groups.has(key)) {
       groups.set(key, {
         key,
         primary: rule,
         rules: kitRules,
-        isKit: rule.type === "KIT_OFFER",
+        isKit: rule.type === "KIT_OFFER" && !rule.deal,
         skuCount: uniqueSkuCount,
       });
     }
@@ -222,6 +226,7 @@ export function estimateLineTotal(listPrice: number, quantity: number, rule?: Of
 
 export function estimateUnitPrice(listPrice: number, rule?: OfferRule) {
   if (!rule) return listPrice;
+  if (rule.deal?.kind === "UNIT" && rule.fixedPrice !== undefined && !rule.discountType) return validPrice(rule.fixedPrice) ? rule.fixedPrice : listPrice;
 
   // RMS describes the benefit separately from the offer's quantity conditions.
   const discountType = rule.discountType?.trim().toUpperCase();
@@ -260,7 +265,9 @@ export function findBestRule(rules: OfferRule[], sku: string, segment: string, q
 }
 
 export function ruleAppliesToSegment(rule: Pick<OfferRule, "segment">, segment: string) {
-  return rule.segment === segment || rule.segment.trim() === "-";
+  const ruleSegment = rule.segment.trim();
+  const customerSegment = segment.trim();
+  return ruleSegment === "-" || ruleSegment === "" || (!!customerSegment && customerSegment !== "-" && ruleSegment === customerSegment);
 }
 
 function effectiveThresholdType(rule: OfferRule) {
@@ -278,6 +285,7 @@ function effectiveThresholdQuantity(rule: OfferRule) {
   }
   const configuredQuantity = Number(rule.thresholdQuantity ?? 0);
   const importedQuantity = Number(rule.minQuantity ?? 0);
+  if (rule.type === "TIERED_DISCOUNT") return Math.max(Number.isFinite(configuredQuantity) ? configuredQuantity : 0, Number.isFinite(importedQuantity) ? importedQuantity : 0, 1);
   const quantity = configuredQuantity > 0 ? configuredQuantity : importedQuantity > 0 ? importedQuantity : 1;
   return Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
 }

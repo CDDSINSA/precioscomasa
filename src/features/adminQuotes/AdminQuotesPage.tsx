@@ -1,7 +1,8 @@
-import { Banknote, PackageSearch, ReceiptText, RefreshCw, Search, TrendingUp } from "lucide-react";
+import { Banknote, FileSpreadsheet, PackageSearch, ReceiptText, RefreshCw, Search, TrendingUp } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { AppFeedback } from "../../components/AppFeedback";
-import { Badge, Button, Card, CardContent, Header, Metric } from "../../components/ui";
+import { Badge, Button, Card, CardContent, Header } from "../../components/ui";
+import { exportAdminQuotesToExcel, exportSingleQuoteToExcel } from "../../services/excel";
 import { formatCurrency } from "../../services/quote";
 import {
   searchIssuedQuotes,
@@ -30,6 +31,7 @@ export function AdminQuotesPage() {
   const [quotes, setQuotes] = useState<AdminQuote[]>([]);
   const [selectedQuoteId, setSelectedQuoteId] = useState("");
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
   const [message, setMessage] = useState<string>();
 
   const selectedQuote = quotes.find((quote) => quote.id === selectedQuoteId) ?? quotes[0];
@@ -76,9 +78,39 @@ export function AdminQuotesPage() {
     loadQuotes(emptyFilters);
   }
 
+  function handleExportExcel() {
+    if (exporting) return;
+    if (!quotes.length) {
+      setMessage("No hay cotizaciones para exportar.");
+      return;
+    }
+
+    try {
+      setExporting(true);
+      exportAdminQuotesToExcel(quotes);
+      setMessage(`Se exportaron ${quotes.length} cotizaciones a Excel con su detalle completo.`);
+    } catch (err) {
+      setMessage(`Error al exportar a Excel: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  function handleExportSingleQuote(quoteToExport: AdminQuote) {
+    try {
+      exportSingleQuoteToExcel(quoteToExport);
+      setMessage(`Cotización ${quoteToExport.quoteCode ?? quoteToExport.id.slice(0, 8)} exportada a Excel exitosamente.`);
+    } catch (err) {
+      setMessage(`Error al exportar cotización: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   return (
     <div className="admin-quotes-page">
-      <Header title="Gestión de cotizaciones" subtitle="Consulta administrativa de cotizaciones emitidas." />
+      <div className="admin-quotes-head">
+        <Header title="Gestión de cotizaciones" subtitle="Consulta administrativa de cotizaciones emitidas." />
+        <AdminQuotesMetricsCard metrics={metrics} />
+      </div>
 
       {message ? <AppFeedback tone={message.includes("No se") ? "warning" : "info"} message={message} /> : null}
 
@@ -125,13 +157,6 @@ export function AdminQuotesPage() {
         </CardContent>
       </Card>
 
-      <div className="metrics quote-admin-metrics">
-        <Metric title="Cotizaciones" value={metrics.quoteCount.toLocaleString("es-NI")} icon={ReceiptText} />
-        <Metric title="Total vendido" value={formatCompactCurrency(metrics.totalWithTax)} icon={Banknote} />
-        <Metric title="Ahorro" value={formatCompactCurrency(metrics.savings)} icon={TrendingUp} />
-        <Metric title="SKU" value={metrics.lineCount.toLocaleString("es-NI")} icon={PackageSearch} />
-      </div>
-
       <div className="quote-admin-layout">
         <Card className="grid-card quote-admin-results">
           <CardContent>
@@ -139,6 +164,18 @@ export function AdminQuotesPage() {
               <div>
                 <h2>Resultados</h2>
                 <p>{loading ? "Cargando cotizaciones..." : "Seleccione una fila para ver el detalle."}</p>
+              </div>
+              <div className="toolbar-actions">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleExportExcel}
+                  disabled={loading || exporting || quotes.length === 0}
+                  title={quotes.length === 0 ? "No hay cotizaciones para exportar" : "Exportar cotizaciones consultadas a Excel"}
+                >
+                  <FileSpreadsheet size={16} />
+                  {exporting ? "Exportando..." : "Exportar a Excel"}
+                </Button>
               </div>
             </div>
             <div className="table-wrap">
@@ -192,13 +229,19 @@ export function AdminQuotesPage() {
           </CardContent>
         </Card>
 
-        <QuoteDetailPanel quote={selectedQuote} />
+        <QuoteDetailPanel quote={selectedQuote} onExportQuote={handleExportSingleQuote} />
       </div>
     </div>
   );
 }
 
-function QuoteDetailPanel({ quote }: { quote?: AdminQuote }) {
+function QuoteDetailPanel({
+  onExportQuote,
+  quote,
+}: {
+  onExportQuote?: (quote: AdminQuote) => void;
+  quote?: AdminQuote;
+}) {
   if (!quote) {
     return (
       <Card className="quote-admin-detail">
@@ -217,7 +260,20 @@ function QuoteDetailPanel({ quote }: { quote?: AdminQuote }) {
             <h2>{quote.quoteCode ?? "Cotización"}</h2>
             <span>{formatDateTime(quote.createdAt)}</span>
           </div>
-          <Badge tone={quote.savings > 0 ? "success" : "neutral"}>{quote.lines.length} líneas</Badge>
+          <div style={{ display: "flex", alignItems: "center", gap: ".5rem" }}>
+            <Badge tone={quote.savings > 0 ? "success" : "neutral"}>{quote.lines.length} líneas</Badge>
+            {onExportQuote ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onExportQuote(quote)}
+                title="Descargar esta cotización en Excel con detalle de códigos, cantidades y precios"
+              >
+                <FileSpreadsheet size={15} />
+                Excel
+              </Button>
+            ) : null}
+          </div>
         </div>
 
         <div className="quote-detail-grid">
@@ -308,4 +364,53 @@ function formatCompactCurrency(value: number) {
     maximumFractionDigits: 0,
     notation: Math.abs(value) >= 1000000 ? "compact" : "standard",
   }).format(value);
+}
+
+function AdminQuotesMetricsCard({
+  metrics,
+}: {
+  metrics: {
+    quoteCount: number;
+    totalWithTax: number;
+    savings: number;
+    lineCount: number;
+  };
+}) {
+  return (
+    <Card className="admin-summary-card">
+      <CardContent className="admin-summary-content">
+        <div className="admin-summary-stat">
+          <div className="admin-summary-label">
+            <ReceiptText size={15} />
+            <span>Cotizaciones</span>
+          </div>
+          <strong>{metrics.quoteCount.toLocaleString("es-NI")}</strong>
+        </div>
+
+        <div className="admin-summary-stat">
+          <div className="admin-summary-label">
+            <Banknote size={15} />
+            <span>Total vendido</span>
+          </div>
+          <strong>{formatCompactCurrency(metrics.totalWithTax)}</strong>
+        </div>
+
+        <div className="admin-summary-stat">
+          <div className="admin-summary-label">
+            <TrendingUp size={15} />
+            <span>Ahorro</span>
+          </div>
+          <strong className="text-savings">{formatCompactCurrency(metrics.savings)}</strong>
+        </div>
+
+        <div className="admin-summary-stat">
+          <div className="admin-summary-label">
+            <PackageSearch size={15} />
+            <span>SKU</span>
+          </div>
+          <strong>{metrics.lineCount.toLocaleString("es-NI")}</strong>
+        </div>
+      </CardContent>
+    </Card>
+  );
 }

@@ -22,7 +22,9 @@ function loadModule(path, dependencies = {}, globals = {}) {
   return exports;
 }
 
-const pricing = loadModule("../src/services/promotions.ts");
+const configModule = loadModule("../src/services/dealConfig.ts");
+const pricing = loadModule("../src/services/promotions.ts", { "./dealConfig": configModule });
+const engine = loadModule("../src/services/dealEngine.ts", { "./promotions": pricing, "./dealConfig": configModule });
 const { promotionSegmentFilter } = loadModule("../src/services/promotionFilters.ts");
 
 test("PostgREST segment filter preserves spaces in the imported universal segment", () => {
@@ -30,7 +32,7 @@ test("PostgREST segment filter preserves spaces in the imported universal segmen
   assert.equal(promotionSegmentFilter(['a"b', 'a\\b']), '("a\\"b","a\\\\b")');
 });
 const { buildQuote } = loadModule("../src/services/quote.ts", {
-  "./promotions": pricing,
+  "./dealEngine": engine,
   "./catalog": {
     findProduct: (catalog, sku) => catalog.find(product => product.sku === sku),
     productImageUrl: sku => `test-image/${sku}`,
@@ -43,6 +45,236 @@ const base = {
   fixedPrice: 80, thresholdQuantity: 0, thresholdType: "MINIMUM",
 };
 const best = (rules, qty = 1, segment = "1002") => pricing.findBestRule(rules, base.sku, segment, qty, 100);
+
+const catalog = ["A", "B", "C", "D", "E"].map(sku => ({ sku, description: sku, listPrice: 100, taxable: true }));
+const rule = (id, changes = {}) => ({ ...base, id, sku: "A", fixedPrice: undefined, type: "LINE_ITEM_DISCOUNT", discountType: "PERCENT_OFF", discountPercent: 10, ...changes });
+const pack = (id, quantity, price, changes = {}) => rule(id, { deal: { kind: "PACK", quantity, price }, ...changes });
+const quoteFor = (items, rules, segment = "1002", products = catalog, options = {}) => buildQuote(items, segment, rules, products, { today: "2026-09-05", ...options });
+const bySku = (summary, sku) => summary.lines.find(line => line.sku === sku);
+
+test("scope: no segment gets universal only; a specific offer does not displace a cheaper universal", () => {
+  const offers = [rule("specific", { segment: "1002", discountPercent: 20 }), rule("universal", { discountPercent: 30 })];
+  assert.equal(quoteFor([{ sku: "A", quantity: 1 }], offers, "").subtotalFinal, 70);
+  assert.equal(quoteFor([{ sku: "A", quantity: 1 }], offers).lines[0].appliedOffer.id, "universal");
+  assert.equal(quoteFor([{ sku: "A", quantity: 1 }], [offers[0]], "1003").subtotalFinal, 100);
+});
+
+test("twenty units: two eight-unit packages and four units at their best tier", () => {
+  const summary = quoteFor([{ sku: "A", quantity: 20 }], [pack("eight", 8, 1000), rule("four", { type: "TIERED_DISCOUNT", minQuantity: 4, discountPercent: 20 }), rule("ten", { discountPercent: 10 })], "1002", [{ ...catalog[0], listPrice: 200 }]);
+  assert.equal(summary.pricingError, undefined);
+  assert.equal(summary.subtotalFinal, 2640);
+  assert.equal(summary.lines[0].allocations.find(b => b.offers.some(r => r.id === "eight")).quantity, 16);
+  assert.equal(summary.lines[0].allocations.find(b => b.offers.some(r => r.id === "four")).quantity, 4);
+});
+
+test("a whole-quantity tier can beat a package plus leftovers", () => {
+  const summary = quoteFor([{ sku: "A", quantity: 20 }], [pack("eight", 8, 500), rule("twenty", { type: "TIERED_DISCOUNT", minQuantity: 20, discountPercent: 45 })]);
+  assert.equal(summary.subtotalFinal, 1100);
+  assert.equal(summary.lines[0].appliedOffer.id, "twenty");
+});
+
+test("global optimum: two 3-unit packs beat the cheapest per-unit 4-unit pack with surplus", () => {
+  const summary = quoteFor([{ sku: "A", quantity: 6 }], [pack("four", 4, 200), pack("three", 3, 180)]);
+  assert.equal(summary.subtotalFinal, 360);
+  assert.equal(summary.lines[0].allocations[0].offers[0].id, "three");
+});
+
+test("remainders never requalify a tier using already consumed units", () => {
+  const summary = quoteFor([{ sku: "A", quantity: 10 }], [pack("eight", 8, 100), rule("five", { type: "TIERED_DISCOUNT", minQuantity: 5, discountPercent: 50 }), rule("unit", { discountPercent: 10 })]);
+  assert.equal(summary.subtotalFinal, 280);
+});
+
+test("kits require every SKU in proportion and return surplus to individual offers", () => {
+  const kit = rule("kit", { deal: { kind: "KIT", items: [
+    { sku: "A", quantity: 2, benefit: { type: "OVERRIDE_PRICE", value: 50 } },
+    { sku: "B", quantity: 1, benefit: { type: "PERCENT_OFF", value: 100 } },
+  ] } });
+  assert.equal(quoteFor([{ sku: "A", quantity: 4 }], [kit]).subtotalFinal, 400);
+  const summary = quoteFor([{ sku: "A", quantity: 5 }, { sku: "B", quantity: 2 }], [kit, rule("unit")]);
+  assert.equal(summary.subtotalFinal, 290);
+  assert.equal(bySku(summary, "B").finalTotal, 0);
+  assert.equal(bySku(summary, "A").allocations.reduce((sum, b) => sum + b.quantity, 0), 5);
+});
+
+test("legacy kits with four or more SKU without threshold are omitted, while configured or small kits apply", () => {
+  // 4 SKUs without threshold/type configured:
+  const unconfiguredKits = ["A", "B", "C", "D"].map(sku => rule("legacy-kit", { type: "KIT_OFFER", sku, minQuantity: 1, thresholdQuantity: undefined, thresholdType: undefined, discountPercent: 50 }));
+  assert.equal(quoteFor(unconfiguredKits.map(r => ({ sku: r.sku, quantity: 1 })), unconfiguredKits).subtotalFinal, 400);
+
+  // 2 SKUs without threshold/type configured: should apply as 2-SKU kit
+  const smallKit = ["A", "B"].map(sku => rule("small-kit", { type: "KIT_OFFER", sku, minQuantity: 1, thresholdQuantity: undefined, thresholdType: undefined, discountPercent: 50 }));
+  assert.equal(quoteFor(smallKit.map(r => ({ sku: r.sku, quantity: 1 })), smallKit).subtotalFinal, 100);
+
+  // 4 SKUs WITH threshold configured: should apply
+  const configuredKits = ["A", "B", "C", "D"].map(sku => rule("conf-kit", { type: "KIT_OFFER", sku, minQuantity: 1, thresholdQuantity: 1, thresholdType: "EXACT", discountPercent: 50 }));
+  assert.equal(quoteFor(configuredKits.map(r => ({ sku: r.sku, quantity: 1 })), configuredKits).subtotalFinal, 200);
+});
+
+test("overlapping kits compete across the complete quote, including opportunity cost", () => {
+  const kit = (id, skus, discount) => rule(id, { deal: { kind: "KIT", items: skus.map(sku => ({ sku, quantity: 1, benefit: { type: "PERCENT_OFF", value: discount } })) } });
+  const summary = quoteFor(["A", "B", "C"].map(sku => ({ sku, quantity: 1 })), [kit("AB", ["A", "B"], 50), kit("AC", ["A", "C"], 60), rule("C-cheap", { sku: "C", discountPercent: 90 })]);
+  assert.equal(summary.subtotalFinal, 110); // AB 100 + C 10, versus AC 80 + B 100.
+  assert.ok(bySku(summary, "A").allocations.every(b => !b.offers.some(r => r.id === "AC")));
+});
+
+test("buy 3 get 1 same SKU consumes four units, repeats and reprices surplus", () => {
+  const offer = rule("3plus1", { deal: { kind: "BUY_GET", buySkus: ["A"], buyQuantity: 3, getSkus: ["A"], getQuantity: 1, benefit: { type: "PERCENT_OFF", value: 100 }, discountTriggers: false } });
+  assert.equal(quoteFor([{ sku: "A", quantity: 3 }], [offer]).subtotalFinal, 300);
+  const summary = quoteFor([{ sku: "A", quantity: 10 }], [offer, rule("unit")]);
+  assert.equal(summary.subtotalFinal, 780);
+  assert.equal(summary.lines[0].allocations.find(b => b.role === "reward").quantity, 2);
+});
+
+test("same-SKU buy 2 get 2 requires the full X+Y group", () => {
+  const offer = rule("2plus2", { deal: { kind: "BUY_GET", buySkus: ["A"], buyQuantity: 2, getSkus: ["A"], getQuantity: 2, benefit: { type: "PERCENT_OFF", value: 50 }, discountTriggers: false } });
+  assert.equal(quoteFor([{ sku: "A", quantity: 3 }], [offer]).subtotalFinal, 300);
+  assert.equal(quoteFor([{ sku: "A", quantity: 4 }], [offer]).subtotalFinal, 300);
+});
+
+test("cross-SKU buy/get caps reward at quoted quantity and cannot invent products", () => {
+  const offer = rule("cross", { deal: { kind: "BUY_GET", buySkus: ["A"], buyQuantity: 2, getSkus: ["B"], getQuantity: 2, benefit: { type: "PERCENT_OFF", value: 100 }, discountTriggers: false } });
+  assert.equal(quoteFor([{ sku: "A", quantity: 2 }], [offer]).subtotalFinal, 200);
+  assert.equal(quoteFor([{ sku: "A", quantity: 2 }, { sku: "B", quantity: 1 }], [offer]).subtotalFinal, 200);
+  assert.equal(quoteFor([{ sku: "A", quantity: 2 }, { sku: "B", quantity: 3 }], [offer]).subtotalFinal, 300);
+});
+
+test("overlapping trigger/reward lists cannot consume the same physical unit twice", () => {
+  const offer = rule("overlap", { deal: { kind: "BUY_GET", buySkus: ["A", "B"], buyQuantity: 2, getSkus: ["A", "C"], getQuantity: 1, benefit: { type: "PERCENT_OFF", value: 100 }, discountTriggers: false } });
+  assert.equal(quoteFor([{ sku: "A", quantity: 2 }], [offer]).subtotalFinal, 200);
+  assert.equal(quoteFor([{ sku: "A", quantity: 3 }], [offer]).subtotalFinal, 200);
+});
+
+test("mix-and-match counts mixed units, including repeated SKU, rather than distinct codes", () => {
+  const offer = rule("mix", { deal: { kind: "MIX_MATCH", skus: ["A", "B", "C", "D", "E", ...Array.from({ length: 15 }, (_, i) => `other-${i}`)], quantity: 3, benefit: { type: "PERCENT_OFF", value: 50 } } });
+  assert.equal(quoteFor([{ sku: "A", quantity: 2 }, { sku: "B", quantity: 1 }], [offer]).subtotalFinal, 150);
+  assert.equal(quoteFor([{ sku: "A", quantity: 3 }], [offer]).subtotalFinal, 150);
+  assert.equal(quoteFor([{ sku: "A", quantity: 2 }], [offer]).subtotalFinal, 200);
+});
+
+test("mixed trigger pool can unlock a reward without buying all eligible SKUs", () => {
+  const offer = rule("mix-reward", { deal: { kind: "BUY_GET", buySkus: ["A", "B", "C", "D"], buyQuantity: 3, getSkus: ["E"], getQuantity: 1, benefit: { type: "PERCENT_OFF", value: 100 }, discountTriggers: false } });
+  assert.equal(quoteFor([{ sku: "A", quantity: 2 }, { sku: "B", quantity: 1 }, { sku: "E", quantity: 1 }], [offer]).subtotalFinal, 300);
+});
+
+test("stacking is multiplicative and allows one non-stackable base promotion", () => {
+  const stack = [rule("ten", { allowStacking: true }), rule("five", { discountPercent: 5, allowStacking: true })];
+  assert.equal(quoteFor([{ sku: "A", quantity: 1 }], stack).subtotalFinal, 85.5);
+  // An exclusive 20% discount combines with stackable 10% and 5% (100 * 0.8 * 0.9 * 0.95 = 68.4):
+  assert.equal(quoteFor([{ sku: "A", quantity: 1 }], [...stack, rule("exclusive", { discountPercent: 20 })]).subtotalFinal, 68.4);
+  // An offer with allowStacking=true CAN combine with an offer with allowStacking=false:
+  assert.equal(quoteFor([{ sku: "A", quantity: 1 }], [stack[0], { ...stack[1], allowStacking: false }]).subtotalFinal, 85.5);
+  // Two offers with allowStacking=false CANNOT combine (they compete, best wins):
+  assert.equal(quoteFor([{ sku: "A", quantity: 1 }], [{ ...stack[0], allowStacking: false }, { ...stack[1], allowStacking: false }]).subtotalFinal, 90);
+  // Between two exclusive offers, the one with bigger discount wins:
+  assert.equal(quoteFor([{ sku: "A", quantity: 1 }], [rule("ten-excl", { allowStacking: false }), rule("twenty-excl", { discountPercent: 20, allowStacking: false })]).subtotalFinal, 80);
+});
+
+test("fixed override precedes percentages and can stack with a stackable promotion even if override is exclusive", () => {
+  const fixed = rule("fixed", { type: "FIXED_QTY_PRICE", discountType: "OVERRIDE_PRICE", fixedPrice: 80, allowStacking: true });
+  assert.equal(quoteFor([{ sku: "A", quantity: 1 }], [fixed, rule("ten", { allowStacking: true })]).subtotalFinal, 72);
+  // If fixed has allowStacking=false, rule("ten") with allowStacking=true CAN still stack on it:
+  assert.equal(quoteFor([{ sku: "A", quantity: 1 }], [{ ...fixed, allowStacking: false }, rule("ten", { allowStacking: true })]).subtotalFinal, 72);
+  // If BOTH have allowStacking=false, they cannot combine (80 fixed beats 90 percentage):
+  assert.equal(quoteFor([{ sku: "A", quantity: 1 }], [{ ...fixed, allowStacking: false }, rule("ten", { allowStacking: false })]).subtotalFinal, 80);
+});
+
+test("the same offer's duplicate rows or tiers never stack twice", () => {
+  const offers = [rule("tier", { type: "TIERED_DISCOUNT", allowStacking: true, minQuantity: 1 }), rule("tier", { type: "TIERED_DISCOUNT", allowStacking: true, minQuantity: 2, discountPercent: 20 })];
+  assert.equal(quoteFor([{ sku: "A", quantity: 2 }], [...offers, ...offers]).subtotalFinal, 160);
+});
+
+test("buy/get trigger discounts allow stacking if at least one offer allows stacking", () => {
+  const offer = rule("cross", { allowStacking: true, deal: { kind: "BUY_GET", buySkus: ["A"], buyQuantity: 2, getSkus: ["B"], getQuantity: 1, benefit: { type: "PERCENT_OFF", value: 100 }, discountTriggers: true } });
+  const items = [{ sku: "A", quantity: 2 }, { sku: "B", quantity: 1 }];
+  assert.equal(quoteFor(items, [offer, rule("ten", { allowStacking: true })]).subtotalFinal, 180);
+  assert.equal(quoteFor(items, [offer, rule("ten", { allowStacking: false })]).subtotalFinal, 180);
+  assert.equal(quoteFor(items, [{ ...offer, allowStacking: false }, rule("ten", { allowStacking: false })]).subtotalFinal, 200);
+});
+
+test("tie breaks by segment, override then earliest expiration regardless of input order", () => {
+  const universal = rule("universal", { discountPercent: 20, endsAt: "2026-09-06" });
+  const specific = rule("specific", { discountPercent: 20, segment: "1002", endsAt: "2026-09-30" });
+  const fixed = rule("fixed", { type: "FIXED_QTY_PRICE", discountType: "OVERRIDE_PRICE", fixedPrice: 80, segment: "1002", endsAt: "2026-09-30" });
+  const earlier = { ...fixed, id: "earlier", endsAt: "2026-09-10" };
+  const items = [{ sku: "A", quantity: 1 }];
+  assert.equal(quoteFor(items, [universal, specific]).lines[0].appliedOffer.id, "specific");
+  assert.equal(quoteFor(items, [specific, fixed]).lines[0].appliedOffer.id, "fixed");
+  for (const candidates of [[earlier, universal, fixed, specific], [specific, fixed, universal, earlier]]) assert.equal(quoteFor(items, candidates).lines[0].appliedOffer.id, "earlier");
+});
+
+test("equal payable cents prefer an override over a fractional-cent percentage result", () => {
+  const percent = rule("percent", { discountPercent: 25 });
+  const fixed = rule("fixed", { discountType: "OVERRIDE_PRICE", fixedPrice: 299.35 });
+  const summary = quoteFor([{ sku: "A", quantity: 1 }], [percent, fixed], "1002", [{ ...catalog[0], listPrice: 399.13 }]);
+  assert.equal(summary.subtotalFinal, 299.35);
+  assert.equal(summary.lines[0].appliedOffer.id, "fixed");
+});
+
+test("duplicate quote lines pool quantity but preserve line allocations and totals", () => {
+  const summary = quoteFor([{ sku: "A", quantity: 2 }, { sku: "A", quantity: 2 }], [pack("four", 4, 150)]);
+  assert.equal(summary.subtotalFinal, 150);
+  assert.equal(summary.lines.length, 2);
+  assert.equal(summary.lines.reduce((sum, line) => sum + line.allocations.reduce((n, b) => n + b.quantity, 0), 0), 4);
+  assert.equal(summary.totalWithTax, 172.5);
+});
+
+test("dates apply before optimization and include the last day", () => {
+  const items = [{ sku: "A", quantity: 1 }];
+  assert.equal(quoteFor(items, [rule("future", { startsAt: "2026-09-06" }), rule("past", { endsAt: "2026-09-04" })]).subtotalFinal, 100);
+  assert.equal(quoteFor(items, [rule("lastday", { endsAt: "2026-09-05" })]).subtotalFinal, 90);
+});
+
+test("fractional package remainder is priced separately without negative/free extra units", () => {
+  const summary = quoteFor([{ sku: "A", quantity: 2.5 }], [pack("two", 2, 100), rule("ten")]);
+  assert.equal(summary.subtotalFinal, 145);
+  assert.equal(summary.lines[0].allocations.reduce((sum, b) => sum + b.quantity, 0), 2.5);
+});
+
+test("an exact-search budget failure is explicit and cannot masquerade as best pricing", () => {
+  const summary = quoteFor([{ sku: "A", quantity: 10 }], [pack("two", 2, 100)], "1002", catalog, { maxTransitions: 1 });
+  assert.ok(summary.pricingError);
+});
+
+test("a default threshold of one cannot erase an imported tier minimum", () => {
+  const offer = rule("tier", { type: "TIERED_DISCOUNT", minQuantity: 8, thresholdQuantity: 1, discountPercent: 50 });
+  assert.equal(quoteFor([{ sku: "A", quantity: 7 }], [offer]).subtotalFinal, 700);
+  assert.equal(quoteFor([{ sku: "A", quantity: 8 }], [offer]).subtotalFinal, 400);
+});
+
+test("a stacked tier can qualify over repeated identical packages", () => {
+  const offers = [pack("four", 4, 200, { allowStacking: true }), rule("eight", { type: "TIERED_DISCOUNT", minQuantity: 8, discountPercent: 10, allowStacking: true })];
+  assert.equal(quoteFor([{ sku: "A", quantity: 8 }], offers).subtotalFinal, 360);
+});
+
+test("a reward percentage stacks after an eligible target unit override", () => {
+  const offer = rule("reward", { allowStacking: true, deal: { kind: "BUY_GET", buySkus: ["A"], buyQuantity: 1, getSkus: ["B"], getQuantity: 1, benefit: { type: "PERCENT_OFF", value: 50 }, discountTriggers: false } });
+  const fixed = rule("fixedB", { sku: "B", discountType: "OVERRIDE_PRICE", fixedPrice: 80, allowStacking: true });
+  assert.equal(quoteFor([{ sku: "A", quantity: 1 }, { sku: "B", quantity: 1 }], [offer, fixed]).subtotalFinal, 140);
+});
+
+test("invalid quantities block pricing rather than silently dropping a line", () => {
+  for (const quantity of [0, -1, NaN, Infinity, 0.0000001]) assert.ok(quoteFor([{ sku: "A", quantity }], []).pricingError);
+});
+
+test("invalid deal definitions are rejected before the allocation search", () => {
+  for (const value of [{ kind: "PACK", quantity: 0, price: 10 }, { kind: "PACK", quantity: 0.0000001, price: 10 }, { kind: "MIX_MATCH", skus: ["A", "A"], quantity: 3, benefit: { type: "PERCENT_OFF", value: 50 } }]) assert.throws(() => configModule.validateDealConfig(value));
+});
+
+test("all pages are read even if the server caps a page below the requested size", async () => {
+  const { readPromotionPages } = loadModule("../src/services/readPromotionPages.ts");
+  const input = Array.from({ length: 7 }, (_, i) => i);
+  const result = await readPromotionPages(async from => ({ data: input.slice(from, from + 2), error: null }));
+  assert.deepEqual([...result], input);
+  await assert.rejects(readPromotionPages(async () => ({ data: null, error: { message: "connection lost" } })), /connection lost/);
+});
+
+test("the original live SKU keeps its universal unit override", () => {
+  const fixed = rule("50369", { sku: "160292022", type: "FIXED_QTY_PRICE", fixedPrice: 299.35, discountType: "OVERRIDE_PRICE", startsAt: "2026-09-03", endsAt: "2026-09-30" });
+  const summary = quoteFor([{ sku: fixed.sku, quantity: 1 }], [fixed], "", [{ ...catalog[0], sku: fixed.sku, listPrice: 399.13 }]);
+  assert.equal(summary.subtotalFinal, 299.35);
+  assert.equal(summary.savings, 99.78);
+  assert.equal(summary.totalWithTax, 344.25);
+});
 
 test("fixed unit override competes against percentage discounts in either order", () => {
   const percent = { ...base, id: "percent", type: "LINE_ITEM_DISCOUNT", discountType: "PERCENT_OFF", discountPercent: 10 };
@@ -126,3 +358,27 @@ test("CSV worker imports Detail change amount as override price, including alias
     assert.equal(response.result[0].type, "FIXED_QTY_PRICE");
   }
 });
+
+test("quote fallback: unallocated remainder or calculation error safely charges list price, never C$ 0", () => {
+  // If pricing throws, quote falls back to list price
+  const summary = quoteFor([{ sku: "A", quantity: 3 }], [pack("bundle", 2, 100)], "1002", catalog, { maxTransitions: 0 });
+  assert.ok(summary.pricingError);
+  assert.equal(summary.subtotalFinal, 300);
+  assert.equal(summary.savings, 0);
+  assert.equal(summary.lines[0].finalTotal, 300);
+  assert.equal(summary.lines[0].allocations[0].role, "regular");
+});
+
+test("4-SKU kit configured via deal (configuraciones adicionales) applies even without threshold", () => {
+  const customKit = rule("custom-4kit", {
+    deal: {
+      kind: "KIT",
+      items: ["A", "B", "C", "D"].map(sku => ({ sku, quantity: 1, benefit: { type: "PERCENT_OFF", value: 40 } })),
+    },
+  });
+  const summary = quoteFor(["A", "B", "C", "D"].map(sku => ({ sku, quantity: 1 })), [customKit]);
+  assert.equal(summary.subtotalFinal, 240);
+  assert.equal(summary.savings, 160);
+});
+
+

@@ -1,6 +1,7 @@
 import comasaLogo from "../assets/logo-comasa.png";
 import type { Customer, QuoteSummary } from "../types/domain";
 import { formatCurrency } from "./quote";
+import { allocationLabel } from "./dealEngine";
 
 const printProductImagesInPdf = false;
 
@@ -13,6 +14,7 @@ type ExportQuotePdfOptions = {
 };
 
 export async function exportQuotePdf(summary: QuoteSummary, options: ExportQuotePdfOptions) {
+  if (summary.pricingError) throw new Error(summary.pricingError);
   const { jsPDF } = await import("jspdf");
   const doc = new jsPDF({ unit: "pt", format: "letter" });
   const page = { width: 612, height: 792 };
@@ -36,7 +38,8 @@ export async function exportQuotePdf(summary: QuoteSummary, options: ExportQuote
   y = drawTableHead(doc, margin, y, contentWidth);
 
   summary.lines.forEach((line, index) => {
-    const rowHeight = 58;
+    const allocationLines = doc.splitTextToSize(allocationLabel(line.allocations), contentWidth - 28);
+    const rowHeight = 58 + (line.allocations?.length ? allocationLines.length * 9 + 8 : 0);
     if (y + rowHeight > page.height - 120) {
       doc.addPage();
       y = drawHeader(doc, logoData, options, generatedAt, margin, contentWidth, true);
@@ -65,13 +68,18 @@ export async function exportQuotePdf(summary: QuoteSummary, options: ExportQuote
   }
 
   y += 18;
-  if (y + 128 > page.height - 48) {
-    doc.addPage();
-    y = drawHeader(doc, logoData, options, generatedAt, margin, contentWidth, true);
+  const totalsHeight = 72;
+  const noteHeight = 108;
+  if (y + totalsHeight + noteHeight > page.height - 38) {
+    if (y > 140) {
+      doc.addPage();
+      y = drawHeader(doc, logoData, options, generatedAt, margin, contentWidth, true);
+    }
   }
 
   drawTotals(doc, summary, margin, y, contentWidth);
-  drawWarning(doc, margin, page.height - 82, contentWidth);
+  const noteY = Math.max(y + totalsHeight + 10, page.height - 38 - noteHeight);
+  drawNotice(doc, margin, noteY, contentWidth);
   drawFooters(doc, page, margin);
   doc.save(`${safeFileName(options.quoteCode || `borrador-comasa-${Date.now()}`)}.pdf`);
 }
@@ -232,6 +240,10 @@ function drawSkuRow(
   doc.setFontSize(8);
   doc.setTextColor(30, 41, 59);
   doc.text(formatCurrency(line.finalTotal), margin + 480, y + 20, { maxWidth: 70 });
+  if (line.allocations?.length) {
+    doc.setFontSize(7);
+    doc.text(doc.splitTextToSize(allocationLabel(line.allocations), summaryWidth - 28), margin + 14, y + 57);
+  }
 
   return y + rowHeight;
 }
@@ -274,23 +286,40 @@ function drawTotals(
   doc.text(formatCurrency(summary.totalWithTax), x + boxWidth - 18, y + 55, { align: "right" });
 }
 
-function drawWarning(
+function drawNotice(
   doc: InstanceType<typeof import("jspdf").jsPDF>,
   margin: number,
   y: number,
   contentWidth: number,
 ) {
-  const note =
-    "Este documento es una referencia aproximada de la oferta de Xstore; las ofertas pueden variar por lógica, cantidad de SKU, unidades y fechas de vencimiento.";
-  doc.setFillColor(254, 243, 199);
-  doc.setDrawColor(245, 158, 11);
-  doc.roundedRect(margin, y, contentWidth, 38, 7, 7, "FD");
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(8);
-  doc.setTextColor(133, 77, 14);
-  doc.text("Advertencia", margin + 12, y + 16);
+  const boxHeight = 108;
+  const paddingX = 12;
+  const innerWidth = contentWidth - paddingX * 2;
+
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(203, 213, 225);
+  doc.roundedRect(margin, y, contentWidth, boxHeight, 6, 6, "FD");
+
   doc.setFont("helvetica", "normal");
-  doc.text(doc.splitTextToSize(note, contentWidth - 96), margin + 82, y + 16);
+  doc.setFontSize(8);
+  doc.setTextColor(51, 65, 85);
+
+  const paragraphs = [
+    "Los valores de la factura se muestran en Córdobas, el valor equivalente en dólares de EEUU se obtiene utilizando el tipo de cambio oficial del día de la facturación. En caso de ser una factura de crédito el pago deberá ser por el valor en dólares o su equivalente en Córdobas según el tipo de cambio del día del pago que realiza.",
+    "NOTA: No se aceptan cambios una vez aprobada la oferta, que fue hecha con base a datos suministrados. Los precios están sujetos a cambios sin previo aviso.\nSOMOS GRANDES CONTRIBUYENTES, ESTAMOS EXENTOS DEL 2% DGI Y 1% ALM.",
+    "Esta oferta es válida por 8 días.",
+    "El retiro del producto debe ser en un máximo de 72 horas. De lo contrario no garantizamos la disponibilidad del inventario.",
+  ];
+
+  let currentY = y + 13;
+  paragraphs.forEach((paragraph, index) => {
+    const lines = doc.splitTextToSize(paragraph, innerWidth);
+    doc.text(lines, margin + paddingX, currentY);
+    currentY += lines.length * 9.5;
+    if (index < paragraphs.length - 1) {
+      currentY += 4;
+    }
+  });
 }
 
 function drawFooters(doc: InstanceType<typeof import("jspdf").jsPDF>, page: { width: number; height: number }, margin: number) {

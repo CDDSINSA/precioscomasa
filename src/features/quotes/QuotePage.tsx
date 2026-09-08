@@ -8,6 +8,7 @@ import { loadCatalog, sampleCatalog } from "../../services/catalog";
 import { exportQuotePdf } from "../../services/pdf";
 import { segments, sampleOfferRules } from "../../services/promotions";
 import { buildQuote, formatCurrency } from "../../services/quote";
+import { allocationLabel } from "../../services/dealEngine";
 import { issueQuote, loadOfferRulesForSkus, loadProductsBySkus } from "../../services/supabase";
 import type { AppProfile, Customer, OfferRule } from "../../types/domain";
 import type { Product, QuoteItem, QuoteSummary } from "../../types/domain";
@@ -30,6 +31,8 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [catalog, setCatalog] = useState(sampleCatalog);
   const [offerRules, setOfferRules] = useState<OfferRule[]>(sampleOfferRules);
+  const [loadedRulesKey, setLoadedRulesKey] = useState("");
+  const [offerLoadError, setOfferLoadError] = useState("");
   const [issuingPdf, setIssuingPdf] = useState(false);
   const [downloadingDraft, setDownloadingDraft] = useState(false);
   const [quoteFeedback, setQuoteFeedback] = useState<{ tone: "success" | "warning" | "info"; message: string } | null>(null);
@@ -37,12 +40,17 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
   const compareScrollRef = useRef<HTMLDivElement>(null);
   const isSyncingScroll = useRef(false);
   const skuList = useMemo(() => items.map((item) => item.sku.trim()).filter(Boolean).join("|"), [items]);
-  const quote = useMemo(() => buildQuote(items, segment, offerRules, catalog), [catalog, items, offerRules, segment]);
+  const requestedRulesKey = `${skuList}|${segment}|${compareSegment}`;
+  const quote = useMemo(() => {
+    const result = buildQuote(items, segment, offerRules, catalog);
+    if (skuList && (offerLoadError || loadedRulesKey !== requestedRulesKey)) result.pricingError = offerLoadError || "Cargando promociones para calcular el mejor precio…";
+    return result;
+  }, [catalog, items, offerRules, segment, skuList, offerLoadError, loadedRulesKey, requestedRulesKey]);
   const compared = useMemo(
     () => (compareSegment ? buildQuote(items, compareSegment, offerRules, catalog) : undefined),
     [catalog, compareSegment, items, offerRules],
   );
-  const issueBlocker = issueBlockerMessage(customer, segment, quote.lines.length);
+  const issueBlocker = quote.pricingError || issueBlockerMessage(customer, segment, quote.lines.length);
   const mergeCatalogProducts = useCallback((products: Product[]) => {
     if (!products.length) return;
     setCatalog((current) => {
@@ -66,16 +74,20 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
     let active = true;
     const skus = skuList.split("|").filter(Boolean);
     const quoteSegments = compareSegment ? [segment, compareSegment] : [segment];
+    setOfferLoadError("");
 
     loadOfferRulesForSkus(skus, quoteSegments).then((loadedRules) => {
-      if (!active || loadedRules === null) return;
-      setOfferRules(loadedRules);
+      if (!active) return;
+      setOfferRules(loadedRules ?? sampleOfferRules);
+      setLoadedRulesKey(requestedRulesKey);
+    }).catch((error) => {
+      if (active) setOfferLoadError(error instanceof Error ? error.message : "No se pudieron cargar las promociones.");
     });
 
     return () => {
       active = false;
     };
-  }, [compareSegment, segment, skuList]);
+  }, [compareSegment, segment, skuList, requestedRulesKey]);
 
   useEffect(() => {
     let active = true;
@@ -169,7 +181,7 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
 
   async function handleDownloadDraftPdf() {
     if (downloadingDraft) return;
-    if (!quote.lines.length) {
+    if (!quote.lines.length || quote.pricingError) {
       setQuoteFeedback({ tone: "warning", message: "Agregue al menos un SKU antes de descargar el borrador." });
       return;
     }
@@ -203,7 +215,7 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
           <div className="section-head">
             <div>
               <h2>Parámetros de cotización</h2>
-              <span>Seleccione cliente y compare contra otro segmento cuando sea necesario.</span>
+              <span>Seleccione cliente y gestione los productos de la cotización.</span>
             </div>
           </div>
           <div className="quote-command-bar" aria-label="Acciones de cotización">
@@ -230,7 +242,7 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
               </Button>
             </div>
             <div className="quote-command-group quote-document-actions">
-              <Button variant="outline" onClick={handleDownloadDraftPdf} disabled={downloadingDraft || !quote.lines.length} title="Descargar PDF de revisión sin emitir consecutivo">
+              <Button variant="outline" onClick={handleDownloadDraftPdf} disabled={downloadingDraft || !quote.lines.length || !!quote.pricingError} title="Descargar PDF de revisión sin emitir consecutivo">
                 <Download size={16} />
                 {downloadingDraft ? "Generando..." : "Borrador PDF"}
               </Button>
@@ -253,16 +265,7 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
             <QuoteDataField label="Dirección" value={customer?.address} placeholder="Sin dirección" wide />
             <QuoteDataField label="Teléfono" value={customer?.mobile} placeholder="Sin teléfono" />
             <QuoteDataField label="ID / Cédula" value={customer?.nationalId} placeholder="Sin ID" />
-            <QuoteDataField label="Segmento base" value={segment ? `Segmento ${segment}` : undefined} placeholder="Desde cliente" />
-            <label className="filter-field">
-              <span>Segmento a comparar</span>
-              <select value={compareSegment} onChange={(event) => setCompareSegment(event.target.value)}>
-                <option value="">Sin comparar</option>
-                {segments.filter((item) => item.id.trim() !== "-" && item.id !== segment).map((item) => (
-                  <option value={item.id} key={item.id}>{item.label}</option>
-                ))}
-              </select>
-            </label>
+            <QuoteDataField label="Segmento base" value={segment ? `Segmento ${segment}` : undefined} placeholder="Desde cliente" wide />
           </div>
         </CardContent>
       </Card>
@@ -331,7 +334,6 @@ function errorMessage(error: unknown) {
 function issueBlockerMessage(customer: Customer | null, segment: string, lineCount: number) {
   const missing: string[] = [];
   if (!customer) missing.push("seleccione un cliente");
-  if (!segment) missing.push("confirme el segmento base");
   if (!lineCount) missing.push("agregue al menos un SKU");
   return missing.length ? `Para emitir la cotización: ${missing.join(", ")}.` : "";
 }
@@ -405,20 +407,20 @@ function QuoteTable({
                   <td className="product-cell">
                     <ProductImage src={line.imageUrl} alt={line.product?.description ?? "Producto no encontrado"} />
                     <div>
-                      <input value={items[index]?.sku ?? ""} onChange={(event) => onChange(index, { sku: event.target.value })} placeholder="SKU" />
+                      <input value={items[line.itemIndex ?? index]?.sku ?? ""} onChange={(event) => onChange(line.itemIndex ?? index, { sku: event.target.value })} placeholder="SKU" />
                       <strong>{line.product?.description ?? "Producto no encontrado"}</strong>
-                      <span>{line.appliedOffer ? `${line.appliedOffer.id} · ${line.appliedOffer.promotionName}` : "Sin oferta aplicada"}</span>
+                      <span>{quote.pricingError ? "Precio pendiente de calcular" : allocationLabel(line.allocations) || "Sin oferta aplicada"}</span>
                     </div>
                   </td>
                   <td className="quantity-cell">
-                    <input type="number" min="1" value={line.quantity} onChange={(event) => onChange(index, { quantity: Number(event.target.value) })} />
+                    <input type="number" min="0.0001" step="any" value={line.quantity} onChange={(event) => onChange(line.itemIndex ?? index, { quantity: Number(event.target.value) })} />
                     <span className={line.savings > 0 ? "saving-note active" : "saving-note"}>
-                      Ahorro {formatCurrency(line.savings)}
+                      Ahorro {quote.pricingError ? "—" : formatCurrency(line.savings)}
                     </span>
                   </td>
                   <td>{formatCurrency(line.unitPrice)}</td>
-                  <td><strong>{formatCurrency(line.finalTotal)}</strong></td>
-                  <td><button className="icon-btn danger" title="Eliminar línea" onClick={() => onRemove(index)}><Trash2 size={16} /></button></td>
+                  <td><strong>{quote.pricingError ? "—" : formatCurrency(line.finalTotal)}</strong></td>
+                  <td><button className="icon-btn danger" title="Eliminar línea" onClick={() => onRemove(line.itemIndex ?? index)}><Trash2 size={16} /></button></td>
                 </tr>
               ))}
               {!quote.lines.length ? (
@@ -465,6 +467,7 @@ function ComparePanel({
 }) {
   const difference = compared ? baseQuote.totalWithTax - compared.totalWithTax : 0;
   const differenceLabel = difference >= 0 ? "Ahorro vs segmento original" : "Incremento vs segmento original";
+  if (compared?.pricingError || baseQuote.pricingError) return <AppFeedback tone="warning" message={compared?.pricingError || baseQuote.pricingError || "Precio pendiente"} />;
 
   return (
     <Card className="compare-panel">
@@ -489,7 +492,7 @@ function ComparePanel({
                   <div className="compare-table-row" key={`${compareSegment}-${baseLine.sku}-${index}`}>
                     <div>
                       <strong>{line?.sku ?? baseLine.sku}</strong>
-                      <span>{line?.appliedOffer ? line.appliedOffer.promotionName : "Sin oferta aplicada"}</span>
+                      <span>{allocationLabel(line?.allocations) || "Sin oferta aplicada"}</span>
                       <small>Ahorro {formatCurrency(line?.savings ?? 0)}</small>
                     </div>
                     <p>{formatCurrency(line?.finalTotal ?? 0)}</p>
@@ -512,6 +515,7 @@ function ComparePanel({
 }
 
 function QuoteTotals({ quote, label }: { quote: QuoteSummary; label: string }) {
+  if (quote.pricingError) return <AppFeedback tone="warning" message={quote.pricingError} />;
   return (
     <div className="quote-totals" aria-label={label}>
       <span>{label}</span>
@@ -523,6 +527,7 @@ function QuoteTotals({ quote, label }: { quote: QuoteSummary; label: string }) {
 }
 
 function QuoteSummaryCard({ quote }: { quote: QuoteSummary }) {
+  if (quote.pricingError) return <AppFeedback tone="warning" message={quote.pricingError} />;
   return (
     <Card className="quote-summary-card">
       <CardContent className="quote-summary-content">

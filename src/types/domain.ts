@@ -15,6 +15,17 @@ export type OfferType =
 
 export type ThresholdType = "EXACT" | "MINIMUM";
 
+export type DealBenefit =
+  | { type: "PERCENT_OFF"; value: number }
+  | { type: "OVERRIDE_PRICE"; value: number };
+
+export type DealConfig =
+  | { kind: "UNIT" }
+  | { kind: "PACK"; quantity: number; price: number }
+  | { kind: "KIT"; items: { sku: string; quantity: number; benefit: DealBenefit }[] }
+  | { kind: "MIX_MATCH"; skus: string[]; quantity: number; benefit: DealBenefit }
+  | { kind: "BUY_GET"; buySkus: string[]; buyQuantity: number; getSkus: string[]; getQuantity: number; benefit: DealBenefit; discountTriggers: boolean };
+
 export type Product = {
   sku: string;
   legacyNumber?: string;
@@ -84,6 +95,7 @@ export type OfferRule = {
   allowStacking?: boolean;
   discountType?: string;
   configurationNote?: string;
+  deal?: DealConfig;
 };
 
 export type QuoteItem = {
@@ -104,16 +116,27 @@ export type Customer = {
 };
 
 export type QuoteLine = QuoteItem & {
+  itemIndex?: number;
   product?: Product;
   unitPrice: number;
   listTotal: number;
   finalTotal: number;
   savings: number;
   appliedOffer?: OfferRule;
+  allocations?: QuoteAllocation[];
   imageUrl: string;
 };
 
+export type QuoteAllocation = {
+  quantity: number;
+  unitPrice: number;
+  total: number;
+  offers: OfferRule[];
+  role: "regular" | "discount" | "bundle" | "trigger" | "reward";
+};
+
 export type QuoteSummary = {
+  pricingError?: string;
   subtotalList: number;
   subtotalFinal: number;
   tax: number;

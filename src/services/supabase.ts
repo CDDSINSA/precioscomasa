@@ -18,6 +18,11 @@ import type {
 import { updateStoredDataStatus } from "./dataStatus";
 import { sampleOfferRules } from "./promotions";
 import { promotionSegmentFilter } from "./promotionFilters";
+import { dealSkus } from "./dealConfig";
+import { readDealSettings, writeDealSetting, dealSettingKey } from "./dealSettings";
+import { allocationLabel } from "./dealEngine";
+import { readPromotionPages } from "./readPromotionPages";
+import type { DealConfig } from "../types/domain";
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabasePublishableKey =
@@ -156,6 +161,7 @@ export type OfferConfigurationFilters = {
 };
 
 export type OfferConfigurationRow = {
+  deal?: DealConfig;
   ruleId: string;
   promotionId: string;
   promotionName: string;
@@ -331,6 +337,7 @@ export async function importPromotionRows(rows: ImportedPromotionRow[]) {
 }
 
 export async function issueQuote(summary: QuoteSummary, options: IssueQuoteOptions): Promise<IssueQuoteResult> {
+  if (summary.pricingError) return { ok: false, message: summary.pricingError };
   if (!supabase) {
     return { ok: false, message: "Supabase no está configurado; no se puede asignar un consecutivo seguro." };
   }
@@ -358,7 +365,7 @@ export async function issueQuote(summary: QuoteSummary, options: IssueQuoteOptio
       product_description: line.product?.description ?? null,
       applied_offer_id: line.appliedOffer?.id ?? null,
       applied_promotion_id: line.appliedOffer?.promotionId ?? null,
-      applied_promotion_name: line.appliedOffer?.promotionName ?? null,
+      applied_promotion_name: allocationLabel(line.allocations) || line.appliedOffer?.promotionName || null,
     })),
   };
 
@@ -835,7 +842,7 @@ export async function syncPromotionsToSupabase(
     message:
       `Sincronizacion completada: ${result.promotions_loaded} promociones y ${result.rules_loaded} reglas publicadas.` +
       (result.promotions_deleted ? ` ${result.promotions_deleted} promociones vencidas eliminadas.` : "") +
-      (result.kits_omitted ? ` ${result.kits_omitted} lineas de kits 4+ omitidas.` : ""),
+      (result.kits_omitted ? ` ${result.kits_omitted} líneas de kits incompletos omitidas.` : ""),
   };
 }
 
@@ -850,9 +857,17 @@ export async function loadOfferRulesForSkus(skus: string[], segments: string[]) 
   if (!promotionIds.length) return [];
 
   const ruleSegments = segmentLookupValues(segments);
+  const settings = await readDealSettings(supabase, promotionIds);
   const baseRows = await fetchOfferRuleRows(cleanSkus, ruleSegments, promotionIds);
-  const kitRows = await fetchKitCompanionRows(baseRows, ruleSegments, promotionIds);
-  return mapOfferRules([...baseRows, ...kitRows], promotionMap);
+  const configuredOfferIds = settings.filter(setting => ruleSegments.some(segment => segment.trim() === setting.segment.trim()) && dealSkus(setting.config, "").some(sku => cleanSkus.includes(sku))).map(setting => setting.offer_id);
+  const kitRows = await fetchKitCompanionRows(baseRows, ruleSegments, promotionIds, configuredOfferIds);
+  const configMap = new Map(settings.map(setting => [dealSettingKey(setting.promotion_id, setting.offer_id, setting.segment), setting.config]));
+  return mapOfferRules([...baseRows, ...kitRows], promotionMap).map(rule => ({ ...rule, deal: configMap.get(dealSettingKey(rule.promotionId, rule.id, rule.segment)) }));
+}
+
+export async function saveOfferDeal(row: OfferConfigurationRow, config: DealConfig) {
+  if (!supabase) throw new Error("Supabase no está configurado.");
+  await writeDealSetting(supabase, { promotion_id: row.promotionId, offer_id: row.offerId, segment: row.segment, config });
 }
 
 export async function searchOfferConfigurations(
@@ -909,7 +924,13 @@ export async function searchOfferConfigurations(
 
   const rows = data as PromotionRuleRow[];
   const promotionMap = await loadPromotionMapByIds(unique(rows.map((row) => row.promotion_id).filter(Boolean) as string[]));
-  return { ok: true, rows: mapOfferConfigurationRows(rows, promotionMap) };
+  try {
+    const settings = await readDealSettings(supabase, [...promotionMap.keys()]);
+    const configs = new Map(settings.map(setting => [dealSettingKey(setting.promotion_id, setting.offer_id, setting.segment), setting.config]));
+    return { ok: true, rows: mapOfferConfigurationRows(rows, promotionMap).map(row => ({ ...row, deal: configs.get(dealSettingKey(row.promotionId, row.offerId, row.segment)) })) };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "No se pudieron cargar las reglas." };
+  }
 }
 
 export async function updateOfferCombinationSetting(row: OfferConfigurationRow, allowStacking: boolean) {
@@ -1095,46 +1116,48 @@ async function loadCurrentPromotionMap() {
   if (!supabase) return new Map<string, PromotionRow>();
 
   const today = todayIso();
-  const { data, error } = await supabase
+  const client = supabase;
+  const data = await readPromotionPages((from, to) => client
     .from("promotions")
     .select("id,name,starts_at,ends_at")
     .neq("status", "vencida")
     .or(`starts_at.is.null,starts_at.lte.${today}`)
-    .or(`ends_at.is.null,ends_at.gte.${today}`);
-
-  if (error || !data) return new Map<string, PromotionRow>();
+    .or(`ends_at.is.null,ends_at.gte.${today}`)
+    .order("id").range(from, to));
   return new Map(data.map((promotion) => [promotion.id, promotion]));
 }
 
 async function fetchOfferRuleRows(skus: string[], segments: string[], promotionIds: string[]) {
   if (!supabase) return [];
 
-  const { data, error } = await supabase
+  const client = supabase;
+  const data = await readPromotionPages((from, to) => client
     .from("offer_rules")
     .select("id,external_offer_id,promotion_id,offer_type,sku,segment,min_quantity,fixed_price,discount_percent,discount_type,configuration_note,allow_stacking,threshold_quantity,threshold_type")
     .eq("is_active", true)
     .in("promotion_id", promotionIds)
     .filter("segment", "in", promotionSegmentFilter(segments))
-    .in("sku", skus);
+    .in("sku", skus).order("id").range(from, to));
 
-  return error || !data ? [] : (data as PromotionRuleRow[]);
+  return data as PromotionRuleRow[];
 }
 
-async function fetchKitCompanionRows(rows: PromotionRuleRow[], segments: string[], promotionIds: string[]) {
+async function fetchKitCompanionRows(rows: PromotionRuleRow[], segments: string[], promotionIds: string[], configuredOfferIds: string[] = []) {
   if (!supabase) return [];
 
-  const kitOfferIds = unique(rows.filter((row) => row.offer_type === "KIT_OFFER").map((row) => row.external_offer_id).filter(Boolean));
+  const kitOfferIds = unique([...rows.filter((row) => row.offer_type === "KIT_OFFER").map((row) => row.external_offer_id).filter(Boolean), ...configuredOfferIds]);
   if (!kitOfferIds.length) return [];
 
-  const { data, error } = await supabase
+  const client = supabase;
+  const data = await readPromotionPages((from, to) => client
     .from("offer_rules")
     .select("id,external_offer_id,promotion_id,offer_type,sku,segment,min_quantity,fixed_price,discount_percent,discount_type,configuration_note,allow_stacking,threshold_quantity,threshold_type")
     .eq("is_active", true)
     .in("promotion_id", promotionIds)
     .filter("segment", "in", promotionSegmentFilter(segments))
-    .in("external_offer_id", kitOfferIds);
+    .in("external_offer_id", kitOfferIds).order("id").range(from, to));
 
-  return error || !data ? [] : (data as PromotionRuleRow[]);
+  return data as PromotionRuleRow[];
 }
 
 function mapOfferRules(rows: PromotionRuleRow[], promotions: Map<string, PromotionRow>): OfferRule[] {
@@ -1154,8 +1177,8 @@ function mapOfferRules(rows: PromotionRuleRow[], promotions: Map<string, Promoti
       fixedPrice: optionalNumber(row.fixed_price),
       discountPercent: optionalNumber(row.discount_percent),
       discountType: row.discount_type ?? undefined,
-      thresholdQuantity: toThresholdQuantity(row.threshold_quantity),
-      thresholdType: toThresholdType(row.threshold_type),
+      thresholdQuantity: optionalThresholdQuantity(row.threshold_quantity),
+      thresholdType: optionalThresholdType(row.threshold_type),
       allowStacking: row.allow_stacking ?? false,
       configurationNote: row.configuration_note ?? undefined,
     }));
@@ -1572,12 +1595,22 @@ function normalizeSearchValue(value: string | undefined) {
 }
 
 function segmentLookupValues(segments: string[]) {
-  const values = new Set([" - ", "-"]);
+  const values = new Set([" - ", "-", ""]);
   segments.map((segment) => segment.trim()).filter(Boolean).forEach((segment) => {
     values.add(segment);
     if (segment === "-") values.add(" - ");
   });
   return [...values];
+}
+
+function optionalThresholdType(value: unknown): ThresholdType | undefined {
+  return value === "MINIMUM" || value === "EXACT" ? value : undefined;
+}
+
+function optionalThresholdQuantity(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === "") return undefined;
+  const quantity = Number(value);
+  return Number.isFinite(quantity) && quantity > 0 ? quantity : undefined;
 }
 
 function toThresholdType(value: unknown): ThresholdType {

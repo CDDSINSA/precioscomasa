@@ -14,6 +14,7 @@ import {
 } from "../../services/promotions";
 import type { AvailableOfferGroup } from "../../services/promotions";
 import { formatCurrency } from "../../services/quote";
+import { dealDescription } from "../../services/dealConfig";
 import { loadInventoryForSkus, loadOfferRulesForSkus, loadProductDepartments, searchProductPageFromSupabase } from "../../services/supabase";
 import type { Product, ProductDepartment, ProductInventory, QuoteItem, OfferRule } from "../../types/domain";
 import { ProductImage } from "./ProductImage";
@@ -48,6 +49,7 @@ export function SkuSearchModal({
   const [inventoryLoading, setInventoryLoading] = useState(false);
   const [inventoryLoadedKey, setInventoryLoadedKey] = useState("");
   const [offerLoading, setOfferLoading] = useState(false);
+  const [offerError, setOfferError] = useState("");
   const [remoteResults, setRemoteResults] = useState<Product[] | null>(null);
   const [remoteHasMore, setRemoteHasMore] = useState(false);
   const [remoteOffset, setRemoteOffset] = useState(0);
@@ -238,10 +240,16 @@ export function SkuSearchModal({
     if (!selected?.sku) return;
     let active = true;
     setOfferLoading(true);
+    setOfferError("");
 
     loadOfferRulesForSkus([selected.sku], [segment]).then((loadedRules) => {
       if (!active || loadedRules === null) return;
       setOfferRules(loadedRules);
+    }).catch((error) => {
+      if (active) {
+        setOfferRules([]);
+        setOfferError(error instanceof Error ? error.message : "No se pudieron cargar las ofertas.");
+      }
     }).finally(() => {
       if (active) setOfferLoading(false);
     });
@@ -260,7 +268,7 @@ export function SkuSearchModal({
   function addSelected(product?: Product, offer?: AvailableOfferGroup) {
     if (!product) return;
     const items = offer?.isKit
-      ? offer.rules.map((rule) => ({ sku: rule.sku, quantity: Math.max(quantity, rule.minQuantity ?? 1) }))
+      ? offer.rules.map((rule) => ({ sku: rule.sku, quantity: Math.max(1, Math.floor(quantity)) * Math.max(1, minimumQuantityForRule(rule), rule.minQuantity ?? 0) }))
       : [{ sku: product.sku, quantity }];
 
     onAddItems(items);
@@ -364,6 +372,7 @@ export function SkuSearchModal({
                 </div>
 
                 <div className="offer-list">
+                  {offerError ? <p role="alert">{offerError}</p> : null}
                   {offerLoading ? <p className="empty-copy">Cargando ofertas del segmento...</p> : null}
                   {!offerLoading && offerGroups.map((offerGroup) => {
                     const applies = offerGroup.rules.every((offer) => ruleMatchesQuantity(offer, quantity));
@@ -381,20 +390,22 @@ export function SkuSearchModal({
                         <Badge tone={offerGroup.primary.segment.trim() === "-" ? "info" : applies ? "success" : "warning"}>
                           {offerGroup.isKit ? `Kit ${offerGroup.skuCount} SKU` : offerGroup.primary.segment.trim() === "-" ? "General" : offerGroup.primary.segment}
                         </Badge>
-                        <small>{thresholdLabel(offerGroup.rules)}</small>
+                        <small>{offerGroup.primary.deal ? dealDescription(offerGroup.primary.deal) : thresholdLabel(offerGroup.rules)}</small>
                         {offerGroup.isKit ? (
                           <div className="kit-items">
                             {offerGroup.rules.map((offer) => (
                               <KitItemRow catalog={catalog} key={`${offer.id}-${offer.sku}`} offer={offer} quantity={quantity} />
                             ))}
                           </div>
+                        ) : offerGroup.primary.deal && offerGroup.primary.deal.kind !== "UNIT" ? (
+                          <p>Se evalúa con los productos de la cotización</p>
                         ) : (
                           <p>{formatCurrency(estimateOfferGroupUnitPrice(selected.listPrice, offerGroup))}</p>
                         )}
                       </button>
                     );
                   })}
-                  {!offerLoading && !offerGroups.length ? <p className="empty-copy">No hay ofertas para este SKU y segmento.</p> : null}
+                  {!offerLoading && !offerError && !offerGroups.length ? <p className="empty-copy">No hay ofertas para este SKU y segmento.</p> : null}
                 </div>
 
                 {addedMessage ? <p className="added-message">{addedMessage}</p> : null}

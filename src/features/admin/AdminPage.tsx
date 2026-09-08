@@ -2,6 +2,7 @@ import { Boxes, Database, Landmark, PackageSearch, Save, Search, SlidersHorizont
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
+import { DealEditor } from "./DealEditor";
 import { AppFeedback } from "../../components/AppFeedback";
 import { Badge, Button, Card, CardContent, Header, Metric } from "../../components/ui";
 import { inventoryFeatureEnabled, inventoryStoreId } from "../../config/features";
@@ -143,7 +144,7 @@ export function AdminPage() {
   async function saveOfferThreshold(row: OfferConfigurationRow) {
     const key = `threshold-${row.ruleId}`;
     setSavingConfigKey(key);
-    const thresholdQuantity = Math.max(1, Number(row.thresholdQuantity) || 1);
+    const thresholdQuantity = Math.max(zeroThresholdAllowed(row.type) ? 0 : 1, Number(row.thresholdQuantity) || 0);
     const normalizedRow = {
       ...row,
       thresholdQuantity,
@@ -535,6 +536,7 @@ function OfferConfigurationPanel({
   onThresholdSave: (row: OfferConfigurationRow) => void;
 }) {
   const uniqueOffers = new Set(rows.map((row) => `${row.promotionId}-${row.offerId}`)).size;
+  const [editing, setEditing] = useState<OfferConfigurationRow | null>(null);
   const combinableOffers = new Set(rows.filter((row) => row.allowStacking).map((row) => `${row.promotionId}-${row.offerId}`)).size;
 
   return (
@@ -567,6 +569,7 @@ function OfferConfigurationPanel({
         ["Combinables", combinableOffers],
       ]}
     >
+      {editing ? <DealEditor row={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); onSearch(); }} /> : null}
       <PreviewFrame title="Columnas pendientes de configurar">
         <table className="settings-table">
           <thead>
@@ -575,6 +578,7 @@ function OfferConfigurationPanel({
               <th>Oferta</th>
               <th>SKU</th>
               <th>Tipo oferta</th>
+              <th>Regla</th>
               <th>Segmento</th>
               <th>Combina</th>
               <th>Threshold</th>
@@ -598,6 +602,7 @@ function OfferConfigurationPanel({
                   <td>{row.offerId}</td>
                   <td>{row.sku}</td>
                   <td><Badge tone="info">{offerTypeLabel(row.type)}</Badge></td>
+                  <td><Button variant="outline" onClick={() => setEditing(row)}>{row.deal ? "Editar regla" : "Definir regla"}</Button></td>
                   <td title={`Segmento almacenado: ${JSON.stringify(row.segment)}`}>{row.segment.trim() === "-" ? "Todos" : row.segment}</td>
                   <td>
                     <label className="inline-toggle">
@@ -643,7 +648,7 @@ function OfferConfigurationPanel({
                 </tr>
               );
             })}
-            {!rows.length ? <EmptyRow colSpan={10} label={loading ? "Buscando ofertas..." : "Busque por ID de promo u oferta para configurar."} /> : null}
+            {!rows.length ? <EmptyRow colSpan={11} label={loading ? "Buscando ofertas..." : "Busque por ID de promo u oferta para configurar."} /> : null}
           </tbody>
         </table>
       </PreviewFrame>
