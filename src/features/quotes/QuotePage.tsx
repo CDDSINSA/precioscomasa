@@ -1,4 +1,4 @@
-import { Download, FileCheck2, FileUp, GitCompareArrows, PackagePlus, ReceiptText, Search, Trash2, TriangleAlert, UserSearch, X } from "lucide-react";
+import { Download, FileCheck2, FileUp, GitCompareArrows, PackagePlus, ReceiptText, Search, Trash2, TrendingUp, TriangleAlert, UserSearch, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { type RefObject, type UIEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppFeedback } from "../../components/AppFeedback";
@@ -446,7 +446,7 @@ function QuoteTable({
             </tbody>
           </table>
         </div>
-        <QuoteTotals quote={quote} label="Resumen segmento original" />
+        <QuoteTotals quote={quote} label={segment ? `Resumen cotización (Segmento ${segment})` : "Resumen de cotización"} />
       </CardContent>
     </Card>
   );
@@ -519,8 +519,10 @@ function QuoteTotals({ quote, label }: { quote: QuoteSummary; label: string }) {
   return (
     <div className="quote-totals" aria-label={label}>
       <span>{label}</span>
-      <p>Subtotal <strong>{formatCurrency(quote.subtotalFinal)}</strong></p>
+      <p>Subtotal lista <strong>{formatCurrency(quote.subtotalList)}</strong></p>
+      <p>Subtotal final <strong>{formatCurrency(quote.subtotalFinal)}</strong></p>
       <p>IVA <strong>{formatCurrency(quote.tax)}</strong></p>
+      <p className="quote-total-savings">Total ahorrado <strong>{formatCurrency(quote.savings)}</strong></p>
       <p>Total con IVA <strong>{formatCurrency(quote.totalWithTax)}</strong></p>
     </div>
   );
@@ -531,9 +533,9 @@ function QuoteSummaryCard({ quote }: { quote: QuoteSummary }) {
   return (
     <Card className="quote-summary-card">
       <CardContent className="quote-summary-content">
-        <QuoteSummaryStat title="Lista" value={formatCurrency(quote.subtotalList)} icon={ReceiptText} />
-        <QuoteSummaryStat title="Final" value={formatCurrency(quote.subtotalFinal)} icon={Search} />
-        <QuoteSummaryStat title="Ahorro" value={formatCurrency(quote.savings)} icon={GitCompareArrows} />
+        <QuoteSummaryStat title="Subtotal lista" value={formatCurrency(quote.subtotalList)} icon={ReceiptText} />
+        <QuoteSummaryStat title="Subtotal final" value={formatCurrency(quote.subtotalFinal)} icon={Search} />
+        <QuoteSummaryStat title="Total ahorrado" value={formatCurrency(quote.savings)} icon={TrendingUp} highlight={quote.savings > 0} />
         <QuoteSummaryStat title="Líneas" value={String(quote.lines.length)} icon={FileUp} />
       </CardContent>
     </Card>
@@ -541,16 +543,18 @@ function QuoteSummaryCard({ quote }: { quote: QuoteSummary }) {
 }
 
 function QuoteSummaryStat({
+  highlight,
   icon: Icon,
   title,
   value,
 }: {
+  highlight?: boolean;
   icon: LucideIcon;
   title: string;
   value: string;
 }) {
   return (
-    <div className="quote-summary-stat">
+    <div className={`quote-summary-stat${highlight ? " highlight-success" : ""}`}>
       <Icon size={16} />
       <span>{title}</span>
       <strong>{value}</strong>
@@ -593,6 +597,8 @@ function IssueConfirmModal({
             <strong>{segment || "-"}</strong>
             <span>Líneas</span>
             <strong>{quote.lines.length}</strong>
+            <span>Total ahorrado</span>
+            <strong style={{ color: "var(--color-success-text)" }}>{formatCurrency(quote.savings)}</strong>
             <span>Total con IVA</span>
             <strong>{formatCurrency(quote.totalWithTax)}</strong>
           </div>

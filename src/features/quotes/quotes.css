@@ -61,6 +61,11 @@
   white-space: nowrap;
 }
 
+.quote-summary-stat.highlight-success strong,
+.quote-summary-stat.highlight-success svg {
+  color: var(--color-success-text);
+}
+
 .form-card > div { display: grid; gap: 1rem; }
 .quote-command-bar {
   display: flex;
@@ -239,6 +244,16 @@
   gap: .75rem;
   margin: 0;
   font-size: .86rem;
+}
+
+.quote-totals p.quote-total-savings {
+  color: var(--color-success-text);
+  font-weight: 600;
+}
+
+.quote-totals p.quote-total-savings strong {
+  color: var(--color-success-text);
+  font-weight: 700;
 }
 
 .quote-totals p:last-child {
