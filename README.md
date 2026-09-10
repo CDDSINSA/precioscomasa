@@ -27,7 +27,7 @@ El centro de carga permite actualizar datos por proceso. Clientes, catalogo, inv
 
 - Promociones: archivo comercial de ofertas.
 - Clientes: reporte de clientes para busqueda y segmento base.
-- Catalogo: SKU, descripcion, unidad de medida, precio de lista y numero de parte.
+- Catalogo: SKU, descripcion, unidad de medida, precio unitario y numero de parte.
 - Inventario: tienda, SKU y existencia. La sincronizacion publica solo registros de tienda 1041.
 - Tiendas: ID y nombre de tienda como soporte interno del inventario.
 

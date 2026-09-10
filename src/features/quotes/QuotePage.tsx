@@ -1,4 +1,4 @@
-import { Download, FileCheck2, FileUp, GitCompareArrows, PackagePlus, ReceiptText, Search, Trash2, TrendingUp, TriangleAlert, UserSearch, X } from "lucide-react";
+import { Download, FileCheck2, FileUp, GitCompareArrows, PackagePlus, Search, Trash2, TrendingUp, TriangleAlert, UserSearch, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { type RefObject, type UIEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppFeedback } from "../../components/AppFeedback";
@@ -396,7 +396,7 @@ function QuoteTable({
               <tr>
                 <th>Producto</th>
                 <th>Cantidad</th>
-                <th>Precio lista</th>
+                <th>Precio unitario</th>
                 <th>Total final</th>
                 <th></th>
               </tr>
@@ -519,7 +519,6 @@ function QuoteTotals({ quote, label }: { quote: QuoteSummary; label: string }) {
   return (
     <div className="quote-totals" aria-label={label}>
       <span>{label}</span>
-      <p>Subtotal lista <strong>{formatCurrency(quote.subtotalList)}</strong></p>
       <p>Subtotal final <strong>{formatCurrency(quote.subtotalFinal)}</strong></p>
       <p>IVA <strong>{formatCurrency(quote.tax)}</strong></p>
       <p className="quote-total-savings">Total ahorrado <strong>{formatCurrency(quote.savings)}</strong></p>
@@ -533,7 +532,6 @@ function QuoteSummaryCard({ quote }: { quote: QuoteSummary }) {
   return (
     <Card className="quote-summary-card">
       <CardContent className="quote-summary-content">
-        <QuoteSummaryStat title="Subtotal lista" value={formatCurrency(quote.subtotalList)} icon={ReceiptText} />
         <QuoteSummaryStat title="Subtotal final" value={formatCurrency(quote.subtotalFinal)} icon={Search} />
         <QuoteSummaryStat title="Total ahorrado" value={formatCurrency(quote.savings)} icon={TrendingUp} highlight={quote.savings > 0} />
         <QuoteSummaryStat title="Líneas" value={String(quote.lines.length)} icon={FileUp} />

@@ -23,7 +23,7 @@ type DetailedQuoteLineRow = {
   "Código (SKU)": string;
   "Descripción del Producto": string;
   "Cantidad": number;
-  "Precio Lista Unitario": number;
+  "Precio Unitario": number;
   "Total Lista": number;
   "Precio Final Unitario": number;
   "Total Final": number;
@@ -65,7 +65,7 @@ export function exportAdminQuotesToExcel(quotes: AdminQuote[], filenamePrefix = 
           "Código (SKU)": "-",
           "Descripción del Producto": "(Sin productos registrados)",
           "Cantidad": 0,
-          "Precio Lista Unitario": 0,
+          "Precio Unitario": 0,
           "Total Lista": 0,
           "Precio Final Unitario": 0,
           "Total Final": 0,
@@ -89,7 +89,7 @@ export function exportAdminQuotesToExcel(quotes: AdminQuote[], filenamePrefix = 
         "Código (SKU)": line.sku,
         "Descripción del Producto": line.productDescription ?? "Producto sin descripción",
         "Cantidad": line.quantity,
-        "Precio Lista Unitario": Number(line.listPrice.toFixed(2)),
+        "Precio Unitario": Number(line.listPrice.toFixed(2)),
         "Total Lista": Number(line.listTotal.toFixed(2)),
         "Precio Final Unitario": finalUnitPrice,
         "Total Final": Number(line.finalTotal.toFixed(2)),
@@ -137,7 +137,7 @@ export function exportAdminQuotesToExcel(quotes: AdminQuote[], filenamePrefix = 
     { wch: 16 }, // Código (SKU)
     { wch: 42 }, // Descripción del Producto
     { wch: 12 }, // Cantidad
-    { wch: 20 }, // Precio Lista Unitario
+    { wch: 20 }, // Precio Unitario
     { wch: 16 }, // Total Lista
     { wch: 20 }, // Precio Final Unitario
     { wch: 16 }, // Total Final
@@ -201,7 +201,7 @@ export function exportSingleQuoteToExcel(quote: AdminQuote) {
       "Código (SKU)",
       "Descripción",
       "Cantidad",
-      "Precio Lista Unit.",
+      "Precio Unitario",
       "Total Lista",
       "Precio Final Unit.",
       "Total Final",
@@ -243,7 +243,7 @@ export function exportSingleQuoteToExcel(quote: AdminQuote) {
     { wch: 16 }, // SKU
     { wch: 42 }, // Descripción
     { wch: 12 }, // Cantidad
-    { wch: 18 }, // Precio Lista Unit.
+    { wch: 18 }, // Precio Unitario
     { wch: 16 }, // Total Lista
     { wch: 18 }, // Precio Final Unit.
     { wch: 16 }, // Total Final
@@ -260,7 +260,7 @@ export function exportSingleQuoteToExcel(quote: AdminQuote) {
       "Código (SKU)": line.sku,
       "Descripción": line.productDescription ?? "Producto sin descripción",
       "Cantidad": line.quantity,
-      "Precio Lista Unitario": Number(line.listPrice.toFixed(2)),
+      "Precio Unitario": Number(line.listPrice.toFixed(2)),
       "Total Lista": Number(line.listTotal.toFixed(2)),
       "Precio Final Unitario": finalUnitPrice,
       "Total Final": Number(line.finalTotal.toFixed(2)),

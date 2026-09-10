@@ -284,7 +284,6 @@ function QuoteDetailPanel({
         </div>
 
         <div className="quote-detail-totals">
-          <span>Subtotal lista <strong>{formatCurrency(quote.subtotalList)}</strong></span>
           <span>Subtotal final <strong>{formatCurrency(quote.subtotalFinal)}</strong></span>
           <span>IVA <strong>{formatCurrency(quote.tax)}</strong></span>
           <span>Ahorro <strong>{formatCurrency(quote.savings)}</strong></span>

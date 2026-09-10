@@ -753,7 +753,7 @@ function CatalogLoadPanel({
       <PreviewFrame title="Productos detectados">
         <table>
           <thead>
-            <tr><th>SKU</th><th>Descripción</th><th>Depto.</th><th>U/M</th><th>Precio lista</th><th>Número parte</th></tr>
+            <tr><th>SKU</th><th>Descripción</th><th>Depto.</th><th>U/M</th><th>Precio unitario</th><th>Número parte</th></tr>
           </thead>
           <tbody>
             {preview.map((product) => (

@@ -193,7 +193,7 @@ function parseCatalogRows(rows: Record<string, unknown>[]): Product[] {
         const sku = String(pick(data, ["item", "sku", "articulo"]) ?? data[0] ?? "").trim();
         const description = String(pick(data, ["item_desc", "descripcion", "description"]) ?? data[3] ?? "").trim();
         const unitOfMeasure = String(pick(data, ["standard_uom", "unidad de medida", "uom"]) ?? data[7] ?? "").trim();
-        const listPrice = toNumber(pick(data, ["unit_retail", "precio de lista", "list_price"]) ?? data[12]) ?? 0;
+        const listPrice = toNumber(pick(data, ["unit_retail", "precio unitario", "precio de lista", "precio lista", "list_price"]) ?? data[12]) ?? 0;
         const partNumber = String(pick(data, ["vpn", "numero de parte", "part_number"]) ?? data[14] ?? "").trim();
         const legacyNumber = String(pick(data, ["legacy_number"]) ?? data[1] ?? "").trim();
         const departmentId = String(

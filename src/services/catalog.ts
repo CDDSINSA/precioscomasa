@@ -101,7 +101,7 @@ function parseCatalogTsv(text: string): Product[] {
       legacyNumber: String(value(row, ["legacy_number"], 1)).trim(),
       description: String(value(row, ["item_desc", "descripcion", "description"], 3)).trim(),
       unitOfMeasure: String(value(row, ["standard_uom", "unidad de medida", "uom"], 7)).trim(),
-      listPrice: parseNumber(value(row, ["unit_retail", "precio de lista", "list_price"], 12)),
+      listPrice: parseNumber(value(row, ["unit_retail", "precio unitario", "precio de lista", "precio lista", "list_price"], 12)),
       partNumber: String(value(row, ["vpn", "numero de parte", "part_number"], 13)).trim(),
       departmentId: String(value(row, ["dep", "dept", "department_id", "id departamento", "departamento"], 4)).trim() || undefined,
       maxDiscount: parseNumber(value(row, ["tienda_desc_max"], 26)) || undefined,
