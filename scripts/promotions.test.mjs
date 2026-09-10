@@ -381,4 +381,206 @@ test("4-SKU kit configured via deal (configuraciones adicionales) applies even w
   assert.equal(summary.savings, 160);
 });
 
+test("isUniversalSegment recognizes universal segment identifiers and excludes specific segments", () => {
+  assert.equal(pricing.isUniversalSegment(" - "), true);
+  assert.equal(pricing.isUniversalSegment("-"), true);
+  assert.equal(pricing.isUniversalSegment(""), true);
+  assert.equal(pricing.isUniversalSegment("Todos los segmentos"), true);
+  assert.equal(pricing.isUniversalSegment("Universal"), true);
+  assert.equal(pricing.isUniversalSegment("1002"), false);
+  assert.equal(pricing.isUniversalSegment("1003"), false);
+  assert.equal(pricing.isUniversalSegment("1105"), false);
+});
 
+test("availableOfferGroups includes universal offers and client segment offers only, strictly excluding others", () => {
+  const universal = rule("universal-rule", { sku: "SKU-TEST", segment: " - ", discountPercent: 10 });
+  const segment1002 = rule("seg-1002-rule", { sku: "SKU-TEST", segment: "1002", discountPercent: 20 });
+  const segment1003 = rule("seg-1003-rule", { sku: "SKU-TEST", segment: "1003", discountPercent: 25 });
+  const allRules = [universal, segment1002, segment1003];
+
+  // For customer with segment 1002:
+  const groups1002 = pricing.availableOfferGroups(allRules, "SKU-TEST", "1002");
+  const ids1002 = groups1002.map((g) => g.primary.id);
+  assert.ok(ids1002.includes("universal-rule"), "Must include universal offer");
+  assert.ok(ids1002.includes("seg-1002-rule"), "Must include client segment 1002 offer");
+  assert.ok(!ids1002.includes("seg-1003-rule"), "Must NOT include segment 1003 offer");
+
+  // For customer with segment 1003:
+  const groups1003 = pricing.availableOfferGroups(allRules, "SKU-TEST", "1003");
+  const ids1003 = groups1003.map((g) => g.primary.id);
+  assert.ok(ids1003.includes("universal-rule"), "Must include universal offer");
+  assert.ok(ids1003.includes("seg-1003-rule"), "Must include client segment 1003 offer");
+  assert.ok(!ids1003.includes("seg-1002-rule"), "Must NOT include segment 1002 offer");
+
+  // For customer with segment 1105 (where no specific offer exists):
+  const groups1105 = pricing.availableOfferGroups(allRules, "SKU-TEST", "1105");
+  const ids1105 = groups1105.map((g) => g.primary.id);
+  assert.ok(ids1105.includes("universal-rule"), "Must include universal offer");
+  assert.ok(!ids1105.includes("seg-1002-rule"), "Must NOT include 1002 offer");
+  assert.ok(!ids1105.includes("seg-1003-rule"), "Must NOT include 1003 offer");
+  assert.equal(ids1105.length, 1);
+});
+
+test("tiered discount threshold qualification and preview ranking by quantity", () => {
+  const tier200 = rule("tier-200", {
+    sku: "GYPSUM",
+    type: "TIERED_DISCOUNT",
+    discountType: "OVERRIDE_PRICE",
+    fixedPrice: 325,
+    minQuantity: 200,
+  });
+  const tier100 = rule("tier-100", {
+    sku: "GYPSUM",
+    type: "TIERED_DISCOUNT",
+    discountType: "OVERRIDE_PRICE",
+    fixedPrice: 330,
+    minQuantity: 100,
+  });
+  const unitPromo = rule("unit-promo", {
+    sku: "GYPSUM",
+    discountPercent: 5,
+    minQuantity: 1,
+  });
+
+  const allGypsumRules = [tier200, tier100, unitPromo];
+  const listPrice = 390.43;
+
+  // ruleMatchesQuantity tests
+  assert.equal(pricing.ruleMatchesQuantity(tier200, 1), false);
+  assert.equal(pricing.ruleMatchesQuantity(tier100, 1), false);
+  assert.equal(pricing.ruleMatchesQuantity(unitPromo, 1), true);
+  assert.equal(pricing.ruleMatchesQuantity(tier100, 100), true);
+  assert.equal(pricing.ruleMatchesQuantity(tier200, 100), false);
+  assert.equal(pricing.ruleMatchesQuantity(tier200, 200), true);
+
+  // sortOfferGroupsByUnitPrice with quantity = 1:
+  // unitPromo (applies: true) must come BEFORE tier200 and tier100 (applies: false)
+  const groups = pricing.availableOfferGroups(allGypsumRules, "GYPSUM", "1002");
+  const sortedQty1 = pricing.sortOfferGroupsByUnitPrice(groups, listPrice, 1);
+  assert.equal(sortedQty1[0].primary.id, "unit-promo");
+
+  // sortOfferGroupsByUnitPrice with quantity = 200:
+  // tier200 (applies: true, price 325) must beat tier100 (price 330) and unitPromo (price 370.91)
+  const sortedQty200 = pricing.sortOfferGroupsByUnitPrice(groups, listPrice, 200);
+  assert.equal(sortedQty200[0].primary.id, "tier-200");
+
+  // Quote integration test with SKU 101031543-like rules:
+  const gypsumCatalog = [{ sku: "GYPSUM", description: "Gypsum", listPrice: 390.43, taxable: true }];
+
+  // 1 unit with only tiered discounts (no unitPromo):
+  const quote1 = quoteFor([{ sku: "GYPSUM", quantity: 1 }], [tier200, tier100], "1002", gypsumCatalog);
+  assert.equal(quote1.subtotalFinal, 390.43);
+  assert.equal(quote1.lines[0].appliedOffer, undefined);
+  assert.equal(quote1.lines[0].savings, 0);
+
+  // 100 units:
+  const quote100 = quoteFor([{ sku: "GYPSUM", quantity: 100 }], [tier200, tier100], "1002", gypsumCatalog);
+  assert.equal(quote100.subtotalFinal, 33000);
+  assert.equal(quote100.lines[0].appliedOffer.id, "tier-100");
+
+  // 200 units:
+  const quote200 = quoteFor([{ sku: "GYPSUM", quantity: 200 }], [tier200, tier100], "1002", gypsumCatalog);
+  assert.equal(quote200.subtotalFinal, 65000);
+  assert.equal(quote200.lines[0].appliedOffer.id, "tier-200");
+});
+
+test("estimateKitTotals correctly calculates kit total price and kit savings", () => {
+  const kitCatalog = [
+    { sku: "LOCK", description: "Cerradura", listPrice: 250, taxable: true },
+    { sku: "COMPANION", description: "Complemento", listPrice: 307.83, taxable: true },
+  ];
+
+  const lockRule = {
+    id: "48698",
+    promotionId: "PROMO_KIT",
+    promotionName: "KIT HERR",
+    type: "KIT_OFFER",
+    sku: "LOCK",
+    segment: "1002",
+    discountPercent: 100,
+    minQuantity: 1,
+  };
+
+  const companionRule = {
+    id: "48698",
+    promotionId: "PROMO_KIT",
+    promotionName: "KIT HERR",
+    type: "KIT_OFFER",
+    sku: "COMPANION",
+    segment: "1002",
+    fixedPrice: 307.83,
+    minQuantity: 1,
+  };
+
+  const kitGroup = {
+    key: "KIT_48698",
+    primary: lockRule,
+    rules: [lockRule, companionRule],
+    isKit: true,
+    skuCount: 2,
+  };
+
+  // 1 kit:
+  // List total = 250 + 307.83 = 557.83
+  // Final total = 0 + 307.83 = 307.83
+  // Savings = 250.00
+  const totals1 = pricing.estimateKitTotals(kitGroup, kitCatalog, 1);
+  assert.equal(totals1.totalList, 557.83);
+  assert.equal(totals1.totalFinal, 307.83);
+  assert.equal(totals1.savings, 250.0);
+
+  // 2 kits:
+  // List total = 557.83 * 2 = 1115.66
+  // Final total = 307.83 * 2 = 615.66
+  // Savings = 500.00
+  const totals2 = pricing.estimateKitTotals(kitGroup, kitCatalog, 2);
+  assert.equal(totals2.totalList, 1115.66);
+  assert.equal(totals2.totalFinal, 615.66);
+  assert.equal(totals2.savings, 500.0);
+});
+
+test("buildQuote groups kit companion items together even if added at separate positions", () => {
+  const kitRuleA = rule("kit-48698", {
+    promotionId: "PROMO_48698",
+    type: "KIT_OFFER",
+    sku: "LOCK",
+    discountPercent: 100,
+    minQuantity: 1,
+  });
+  const kitRuleB = rule("kit-48698", {
+    promotionId: "PROMO_48698",
+    type: "KIT_OFFER",
+    sku: "HANDLE",
+    fixedPrice: 300,
+    minQuantity: 1,
+  });
+
+  const testCatalog = [
+    { sku: "LOCK", description: "Cerradura", listPrice: 250, taxable: true },
+    { sku: "GYPSUM", description: "Gypsum", listPrice: 400, taxable: true },
+    { sku: "PAINT", description: "Pintura", listPrice: 150, taxable: true },
+    { sku: "HANDLE", description: "Manija", listPrice: 350, taxable: true },
+  ];
+
+  // Items added separated: LOCK at index 0, then GYPSUM, then PAINT, and HANDLE at index 3:
+  const items = [
+    { sku: "LOCK", quantity: 1 },
+    { sku: "GYPSUM", quantity: 1 },
+    { sku: "PAINT", quantity: 1 },
+    { sku: "HANDLE", quantity: 1 },
+  ];
+
+  const summary = quoteFor(items, [kitRuleA, kitRuleB], "1002", testCatalog);
+
+  // In the resulting summary.lines, LOCK and HANDLE must be consecutive (positions 0 and 1)!
+  assert.equal(summary.lines[0].sku, "LOCK");
+  assert.equal(summary.lines[1].sku, "HANDLE");
+  assert.equal(summary.lines[2].sku, "GYPSUM");
+  assert.equal(summary.lines[3].sku, "PAINT");
+
+  // And itemIndex must be preserved:
+  assert.equal(summary.lines[0].itemIndex, 0); // LOCK was items[0]
+  assert.equal(summary.lines[1].itemIndex, 3); // HANDLE was items[3]
+  assert.equal(summary.lines[2].itemIndex, 1); // GYPSUM was items[1]
+  assert.equal(summary.lines[3].itemIndex, 2); // PAINT was items[2]
+});

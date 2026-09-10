@@ -334,8 +334,23 @@ export function allocateBestDeals(items: QuoteItem[], catalog: Product[], rules:
   return output;
 }
 
-export function allocationLabel(allocations: QuoteAllocation[] = []) {
-  return allocations.map(bucket => `${bucket.quantity} u: ${bucket.offers.length ? [...new Set(bucket.offers.map(r => `${r.id} ${r.promotionName}`))].join(" + ") : "Precio regular"} = C$${bucket.total.toFixed(2)}`).join(" · ");
+export function allocationLines(allocations: QuoteAllocation[] = []): string[] {
+  return allocations
+    .filter((bucket) => bucket.quantity > 1e-6)
+    .map((bucket) => {
+      const displayQty = Number.isInteger(bucket.quantity)
+        ? bucket.quantity
+        : Number(bucket.quantity.toFixed(4));
+      return `${displayQty} u: ${
+        bucket.offers.length
+          ? [...new Set(bucket.offers.map((r) => `${r.id} ${r.promotionName}`))].join(" + ")
+          : "Precio regular"
+      } = C$${bucket.total.toFixed(2)}`;
+    });
+}
+
+export function allocationLabel(allocations: QuoteAllocation[] = []): string {
+  return allocationLines(allocations).join(" · ");
 }
 
 export { money as roundMoney };

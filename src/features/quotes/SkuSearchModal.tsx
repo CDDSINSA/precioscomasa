@@ -1,12 +1,15 @@
-import { Layers3, PackagePlus, Search, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Layers3, PackagePlus, Search, UserCheck, UserSearch, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, Badge } from "../../components/ui";
 import { inventoryStoreId } from "../../config/features";
 import { productImageUrl, searchProducts } from "../../services/catalog";
 import {
   availableOfferGroups,
+  estimateKitTotals,
   estimateLineTotal,
   estimateOfferGroupUnitPrice,
+  estimateUnitPrice,
+  isUniversalSegment,
   minimumQuantityForRule,
   ruleMatchesQuantity,
   sampleOfferRules,
@@ -15,8 +18,8 @@ import {
 import type { AvailableOfferGroup } from "../../services/promotions";
 import { formatCurrency } from "../../services/quote";
 import { dealDescription } from "../../services/dealConfig";
-import { loadInventoryForSkus, loadOfferRulesForSkus, loadProductDepartments, searchProductPageFromSupabase } from "../../services/supabase";
-import type { Product, ProductDepartment, ProductInventory, QuoteItem, OfferRule } from "../../types/domain";
+import { loadInventoryForSkus, loadOfferRulesForSkus, loadProductDepartments, loadProductsBySkus, searchProductPageFromSupabase } from "../../services/supabase";
+import type { Customer, Product, ProductDepartment, ProductInventory, QuoteItem, OfferRule } from "../../types/domain";
 import { ProductImage } from "./ProductImage";
 
 const productSearchPageSize = 36;
@@ -24,26 +27,31 @@ const visibleResultStep = 12;
 
 type Props = {
   catalog: Product[];
+  customer?: Customer | null;
   segment: string;
   inventoryEnabled: boolean;
   onCatalogProductsFound: (products: Product[]) => void;
   onClose: () => void;
+  onRequestSelectCustomer?: () => void;
   onAddItems: (items: QuoteItem[]) => void;
 };
 
 export function SkuSearchModal({
   catalog,
+  customer,
   segment,
   inventoryEnabled,
   onCatalogProductsFound,
   onClose,
+  onRequestSelectCustomer,
   onAddItems,
 }: Props) {
   const [term, setTerm] = useState("");
   const [quantity, setQuantity] = useState(1);
   const [selectedOfferKey, setSelectedOfferKey] = useState("");
   const [addedMessage, setAddedMessage] = useState("");
-  const [offerRules, setOfferRules] = useState<OfferRule[]>(sampleOfferRules);
+  const [offerRules, setOfferRules] = useState<OfferRule[]>([]);
+  const hasCustomer = Boolean(customer?.customerId || (customer?.displayName && segment) || (segment && !isUniversalSegment(segment)));
   const [inventory, setInventory] = useState<Map<string, ProductInventory>>(new Map());
   const [remoteLoading, setRemoteLoading] = useState(false);
   const [inventoryLoading, setInventoryLoading] = useState(false);
@@ -79,10 +87,23 @@ export function SkuSearchModal({
   const [selectedSku, setSelectedSku] = useState(results[0]?.sku ?? "");
   const selected = results.find((product) => product.sku === selectedSku) ?? results[0];
   const offerGroups = useMemo(
-    () => (selected ? sortOfferGroupsByUnitPrice(availableOfferGroups(offerRules, selected.sku, segment), selected.listPrice) : []),
-    [offerRules, selected, segment],
+    () => (hasCustomer && selected ? sortOfferGroupsByUnitPrice(availableOfferGroups(offerRules, selected.sku, segment), selected.listPrice, quantity) : []),
+    [hasCustomer, offerRules, selected, segment, quantity],
   );
-  const selectedOffer = offerGroups.find((group) => group.key === selectedOfferKey) ?? offerGroups[0];
+
+  const applicableOfferGroups = useMemo(
+    () => offerGroups.filter((group) => group.rules.every((offer) => ruleMatchesQuantity(offer, quantity))),
+    [offerGroups, quantity],
+  );
+
+  const selectedOffer = useMemo(() => {
+    if (selectedOfferKey === "LIST_PRICE") return undefined;
+    if (selectedOfferKey) {
+      const match = applicableOfferGroups.find((group) => group.key === selectedOfferKey);
+      if (match) return match;
+    }
+    return hasCustomer ? applicableOfferGroups[0] : undefined;
+  }, [applicableOfferGroups, hasCustomer, selectedOfferKey]);
 
   useEffect(() => {
     let active = true;
@@ -236,15 +257,37 @@ export function SkuSearchModal({
     }
   }, [results, selectedSku]);
 
+  const catalogRef = useRef(catalog);
   useEffect(() => {
-    if (!selected?.sku) return;
+    catalogRef.current = catalog;
+  }, [catalog]);
+
+  useEffect(() => {
+    if (!hasCustomer || !selected?.sku) {
+      setOfferRules([]);
+      setOfferLoading(false);
+      setOfferError("");
+      return;
+    }
+
     let active = true;
     setOfferLoading(true);
     setOfferError("");
 
     loadOfferRulesForSkus([selected.sku], [segment]).then((loadedRules) => {
-      if (!active || loadedRules === null) return;
-      setOfferRules(loadedRules);
+      if (!active) return;
+      const rules = loadedRules ?? sampleOfferRules;
+      setOfferRules(rules);
+
+      const knownSkus = new Set(catalogRef.current.map((p) => p.sku));
+      const companionSkus = [...new Set(rules.map((r) => r.sku))].filter((sku) => sku && !knownSkus.has(sku));
+      if (companionSkus.length) {
+        loadProductsBySkus(companionSkus).then((companionProducts) => {
+          if (active && companionProducts.length) {
+            onCatalogProductsFound(companionProducts);
+          }
+        });
+      }
     }).catch((error) => {
       if (active) {
         setOfferRules([]);
@@ -257,7 +300,7 @@ export function SkuSearchModal({
     return () => {
       active = false;
     };
-  }, [selected?.sku, segment]);
+  }, [hasCustomer, onCatalogProductsFound, selected?.sku, segment]);
 
   function selectSku(sku: string) {
     setSelectedSku(sku);
@@ -267,12 +310,20 @@ export function SkuSearchModal({
 
   function addSelected(product?: Product, offer?: AvailableOfferGroup) {
     if (!product) return;
-    const items = offer?.isKit
-      ? offer.rules.map((rule) => ({ sku: rule.sku, quantity: Math.max(1, Math.floor(quantity)) * Math.max(1, minimumQuantityForRule(rule), rule.minQuantity ?? 0) }))
-      : [{ sku: product.sku, quantity }];
+    const safeQuantity = Math.max(1, Math.round(quantity) || 1);
+    const effectiveOffer = offer && offer.rules.every((rule) => ruleMatchesQuantity(rule, safeQuantity)) ? offer : undefined;
+    const items = effectiveOffer?.isKit
+      ? effectiveOffer.rules.map((rule) => ({ sku: rule.sku, quantity: safeQuantity * Math.max(1, minimumQuantityForRule(rule), rule.minQuantity ?? 0) }))
+      : [{ sku: product.sku, quantity: safeQuantity }];
 
     onAddItems(items);
-    setAddedMessage(offer?.isKit ? `Kit agregado: ${items.length} SKU` : `SKU agregado: ${product.sku}`);
+    setAddedMessage(
+      effectiveOffer?.isKit
+        ? `Kit agregado: ${items.length} SKU`
+        : effectiveOffer
+        ? `SKU agregado con oferta: ${product.sku}`
+        : `SKU agregado (Precio de lista): ${product.sku}`
+    );
   }
 
   return (
@@ -328,7 +379,22 @@ export function SkuSearchModal({
               </label>
               <label className="qty-field">
                 <span>Cant.</span>
-                <input type="number" min="1" value={quantity} onChange={(event) => setQuantity(Math.max(1, Number(event.target.value)))} />
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={quantity}
+                  onChange={(event) => {
+                    const raw = event.target.value;
+                    const parsed = parseInt(raw, 10);
+                    setQuantity(Number.isNaN(parsed) ? 1 : Math.max(1, parsed));
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "." || event.key === "," || event.key === "e" || event.key === "E" || event.key === "-") {
+                      event.preventDefault();
+                    }
+                  }}
+                />
               </label>
             </div>
 
@@ -368,51 +434,180 @@ export function SkuSearchModal({
                   <strong>{selected.sku}</strong>
                   <span>{selected.description}</span>
                   <p>{formatCurrency(selected.listPrice)}</p>
+                  {hasCustomer ? (
+                    <div className="sku-customer-badge">
+                      <UserCheck size={13} />
+                      <span>
+                        {customer?.displayName || customer?.customerId ? `${customer.displayName || customer.customerId} · ` : ""}
+                        Segmento {segment || "-"}
+                      </span>
+                    </div>
+                  ) : null}
                   {inventoryEnabled ? <InventoryBreakdown inventory={inventory.get(selected.sku)} /> : null}
                 </div>
 
-                <div className="offer-list">
-                  {offerError ? <p role="alert">{offerError}</p> : null}
-                  {offerLoading ? <p className="empty-copy">Cargando ofertas del segmento...</p> : null}
-                  {!offerLoading && offerGroups.map((offerGroup) => {
-                    const applies = offerGroup.rules.every((offer) => ruleMatchesQuantity(offer, quantity));
-                    return (
-                      <button
-                        className={offerGroup.key === selectedOffer?.key ? "offer-row selected" : "offer-row"}
-                        key={offerGroup.key}
-                        type="button"
-                        onClick={() => setSelectedOfferKey(offerGroup.key)}
-                      >
-                        <div>
-                          <strong>{offerGroup.primary.id}</strong>
-                          <span>{offerGroup.primary.promotionName}</span>
-                        </div>
-                        <Badge tone={offerGroup.primary.segment.trim() === "-" ? "info" : applies ? "success" : "warning"}>
-                          {offerGroup.isKit ? `Kit ${offerGroup.skuCount} SKU` : offerGroup.primary.segment.trim() === "-" ? "General" : offerGroup.primary.segment}
-                        </Badge>
-                        <small>{offerGroup.primary.deal ? dealDescription(offerGroup.primary.deal) : thresholdLabel(offerGroup.rules)}</small>
-                        {offerGroup.isKit ? (
-                          <div className="kit-items">
-                            {offerGroup.rules.map((offer) => (
-                              <KitItemRow catalog={catalog} key={`${offer.id}-${offer.sku}`} offer={offer} quantity={quantity} />
-                            ))}
+                {!hasCustomer ? (
+                  <div className="offer-list">
+                    <div className="sku-no-customer-banner">
+                      <div className="sku-no-customer-icon">
+                        <UserSearch size={22} />
+                      </div>
+                      <div className="sku-no-customer-content">
+                        <h4>Cliente no seleccionado</h4>
+                        <p>
+                          Para consultar y aplicar ofertas o promociones disponibles según segmento comercial, debes seleccionar un cliente.
+                        </p>
+                        {onRequestSelectCustomer ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="sku-select-customer-btn"
+                            onClick={onRequestSelectCustomer}
+                          >
+                            <UserSearch size={15} />
+                            Seleccionar cliente
+                          </Button>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="offer-row selected static-list-price">
+                      <div>
+                        <strong>Precio de lista</strong>
+                        <span>Tarifa base estándar</span>
+                      </div>
+                      <Badge tone="neutral">Base</Badge>
+                      <small>Sin descuento promocional</small>
+                      <p>{formatCurrency(selected.listPrice)}</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="offer-list">
+                    {offerError ? <p role="alert">{offerError}</p> : null}
+                    {offerLoading ? <p className="empty-copy">Cargando ofertas del segmento...</p> : null}
+
+                    {!offerLoading ? (
+                      <>
+                        <button
+                          className={!selectedOffer ? "offer-row selected" : "offer-row"}
+                          type="button"
+                          onClick={() => setSelectedOfferKey("LIST_PRICE")}
+                        >
+                          <div>
+                            <strong>Precio de lista</strong>
+                            <span>Tarifa base regular</span>
                           </div>
-                        ) : offerGroup.primary.deal && offerGroup.primary.deal.kind !== "UNIT" ? (
-                          <p>Se evalúa con los productos de la cotización</p>
-                        ) : (
-                          <p>{formatCurrency(estimateOfferGroupUnitPrice(selected.listPrice, offerGroup))}</p>
-                        )}
-                      </button>
-                    );
-                  })}
-                  {!offerLoading && !offerError && !offerGroups.length ? <p className="empty-copy">No hay ofertas para este SKU y segmento.</p> : null}
-                </div>
+                          <Badge tone="neutral">Base</Badge>
+                          <small>Sin condiciones ni mínimo</small>
+                          <p>{formatCurrency(selected.listPrice)}</p>
+                        </button>
+
+                        {offerGroups.map((offerGroup) => {
+                          const applies = offerGroup.rules.every((offer) => ruleMatchesQuantity(offer, quantity));
+                          const isUniversal = isUniversalSegment(offerGroup.primary.segment);
+                          const isSelected = selectedOffer?.key === offerGroup.key;
+                          const minQty = Math.max(...offerGroup.rules.map(minimumQuantityForRule));
+
+                          return (
+                            <button
+                              className={isSelected ? "offer-row selected" : applies ? "offer-row" : "offer-row disabled"}
+                              key={offerGroup.key}
+                              type="button"
+                              disabled={!applies}
+                              onClick={() => {
+                                if (applies) setSelectedOfferKey(offerGroup.key);
+                              }}
+                              title={!applies ? `Inhabilitada: requiere al menos ${minQty} unidades para aplicar (actual: ${quantity})` : undefined}
+                            >
+                              <div>
+                                <strong>{offerGroup.primary.id}</strong>
+                                <span>{offerGroup.primary.promotionName}</span>
+                              </div>
+                              <Badge tone={!applies ? "neutral" : isUniversal ? "info" : "success"}>
+                                {!applies
+                                  ? `Requiere mín. ${minQty} u.`
+                                  : offerGroup.isKit
+                                  ? `Kit ${offerGroup.skuCount} SKU`
+                                  : isUniversal
+                                  ? "Universal"
+                                  : `Segmento ${offerGroup.primary.segment.trim() || segment}`}
+                              </Badge>
+                              <small>{offerGroup.primary.deal ? dealDescription(offerGroup.primary.deal) : thresholdLabel(offerGroup.rules)}</small>
+                              {offerGroup.isKit ? (
+                                <>
+                                  <div className="kit-items">
+                                    {offerGroup.rules.map((offer) => (
+                                      <KitItemRow catalog={catalog} key={`${offer.id}-${offer.sku}`} offer={offer} quantity={quantity} />
+                                    ))}
+                                  </div>
+                                  {(() => {
+                                    const kitTotals = estimateKitTotals(offerGroup, catalog, quantity);
+                                    return (
+                                      <div className="kit-card-footer">
+                                        <div className="kit-card-totals">
+                                          <span className="kit-total-label">
+                                            Total kit{quantity > 1 ? ` (${quantity} kits)` : ""}:
+                                          </span>
+                                          <strong className="kit-total-price">
+                                            {formatCurrency(kitTotals.totalFinal)}
+                                          </strong>
+                                        </div>
+                                        {kitTotals.savings > 0 ? (
+                                          <span className="kit-total-savings">
+                                            Ahorro total {formatCurrency(kitTotals.savings)}
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })()}
+                                </>
+                              ) : offerGroup.primary.deal && offerGroup.primary.deal.kind !== "UNIT" ? (
+                                <p>Se evalúa con los productos de la cotización</p>
+                              ) : (
+                                <p>{formatCurrency(estimateOfferGroupUnitPrice(selected.listPrice, offerGroup))}</p>
+                              )}
+                              {!applies ? (
+                                <span className="offer-row-unmet">
+                                  Inhabilitada: requiere al menos {minQty} unidades para aplicar (cantidad actual: {quantity})
+                                </span>
+                              ) : null}
+                            </button>
+                          );
+                        })}
+
+                        {!offerError && !offerGroups.length ? (
+                          <p className="empty-copy">No hay ofertas promocionales disponibles para este SKU en el segmento {segment}.</p>
+                        ) : null}
+                      </>
+                    ) : null}
+                  </div>
+                )}
 
                 {addedMessage ? <p className="added-message">{addedMessage}</p> : null}
 
+                {selectedOffer?.isKit ? (() => {
+                  const kitTotals = estimateKitTotals(selectedOffer, catalog, quantity);
+                  return (
+                    <div className="selected-kit-banner">
+                      <div className="selected-kit-banner-row">
+                        <span>Total del kit: <strong>{formatCurrency(kitTotals.totalFinal)}</strong></span>
+                        {kitTotals.savings > 0 ? (
+                          <span className="selected-kit-savings">
+                            Ahorro total: <strong>{formatCurrency(kitTotals.savings)}</strong>
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })() : null}
+
                 <Button onClick={() => addSelected(selected, selectedOffer)}>
                   <PackagePlus size={16} />
-                  {selectedOffer?.isKit ? "Agregar kit" : "Agregar SKU"}
+                  {selectedOffer?.isKit
+                    ? "Agregar kit"
+                    : selectedOffer
+                    ? "Agregar SKU con oferta"
+                    : "Agregar SKU (Precio de lista)"}
                 </Button>
               </>
             ) : (
@@ -427,14 +622,19 @@ export function SkuSearchModal({
 
 function KitItemRow({ catalog, offer, quantity }: { catalog: Product[]; offer: OfferRule; quantity: number }) {
   const product = catalog.find((item) => item.sku === offer.sku);
-  const rowQuantity = Math.max(quantity, offer.minQuantity ?? 1);
-  const finalTotal = product ? estimateLineTotal(product.listPrice, rowQuantity, offer) : 0;
+  const safeKitQuantity = Math.max(1, Math.round(quantity) || 1);
+  const perKit = Math.max(1, minimumQuantityForRule(offer), offer.minQuantity ?? 0);
+  const rowQuantity = safeKitQuantity * perKit;
+  const unitPrice = product
+    ? estimateUnitPrice(product.listPrice, offer)
+    : (offer.fixedPrice !== undefined && offer.discountType !== "PERCENT_OFF" ? offer.fixedPrice : 0);
+  const finalTotal = unitPrice * rowQuantity;
 
   return (
     <span className="kit-item">
       <strong>{offer.sku}</strong>
-      <small>{product?.description ?? "Producto pendiente del maestro"}</small>
-      <em>{benefitLabel(offer)} - {formatCurrency(finalTotal)}</em>
+      <small>{product?.description ?? (offer.configurationNote || "Producto pendiente del maestro")}</small>
+      <em>{rowQuantity > 1 ? `${rowQuantity} u · ` : ""}{benefitLabel(offer)} - {formatCurrency(finalTotal)}</em>
     </span>
   );
 }

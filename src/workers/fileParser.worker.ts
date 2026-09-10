@@ -116,7 +116,7 @@ function parseQuoteRows(rows: Record<string, unknown>[]): QuoteItem[] {
     const data = normalizeRow(row);
     return {
       sku: String(data.sku ?? data.item ?? data.articulo ?? "").trim(),
-      quantity: toNumber(data.cantidad ?? data.quantity ?? data.qty) ?? 1,
+      quantity: Math.max(1, Math.round(toNumber(data.cantidad ?? data.quantity ?? data.qty) ?? 1)),
     };
   });
 }

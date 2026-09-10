@@ -1,8 +1,51 @@
-import type { OfferRule, QuoteItem, QuoteSummary } from "../types/domain";
+import type { OfferRule, QuoteItem, QuoteLine, QuoteSummary } from "../types/domain";
 import { findProduct, productImageUrl, sampleCatalog } from "./catalog";
 import { allocateBestDeals, roundMoney, type PricingOptions } from "./dealEngine";
 
 export const taxRate = 0.15;
+
+export function groupQuoteLinesByOffer(lines: QuoteLine[]): QuoteLine[] {
+  if (lines.length <= 1) return lines;
+
+  function getOfferKey(line: QuoteLine): string | undefined {
+    const isKitOrBundle =
+      line.appliedOffer?.type === "KIT_OFFER" ||
+      line.appliedOffer?.deal?.kind === "KIT" ||
+      line.allocations?.some((a) => a.role === "bundle" || a.offers.some((o) => o.type === "KIT_OFFER" || o.deal?.kind === "KIT"));
+
+    if (isKitOrBundle) {
+      const offer = line.appliedOffer || line.allocations?.flatMap((a) => a.offers).find((o) => o.type === "KIT_OFFER" || o.deal?.kind === "KIT");
+      return `KIT_${offer?.promotionId || offer?.id || "bundle"}`;
+    }
+
+    if (line.appliedOffer?.deal && (line.appliedOffer.deal.kind === "BUY_GET" || line.appliedOffer.deal.kind === "MIX_MATCH")) {
+      return `DEAL_${line.appliedOffer.promotionId || line.appliedOffer.id}`;
+    }
+
+    return undefined;
+  }
+
+  const result: QuoteLine[] = [];
+  const visited = new Set<number>();
+
+  for (let i = 0; i < lines.length; i++) {
+    if (visited.has(i)) continue;
+    result.push(lines[i]);
+    visited.add(i);
+
+    const key = getOfferKey(lines[i]);
+    if (key) {
+      for (let j = i + 1; j < lines.length; j++) {
+        if (!visited.has(j) && getOfferKey(lines[j]) === key) {
+          result.push(lines[j]);
+          visited.add(j);
+        }
+      }
+    }
+  }
+
+  return result;
+}
 
 export function buildQuote(
   items: QuoteItem[],
@@ -19,7 +62,7 @@ export function buildQuote(
     pricingError = error instanceof Error ? error.message : "No se pudo calcular la mejor oferta.";
   }
   const used = new Map<string, { raw: number; rounded: number }>();
-  const lines = items
+  const rawLines = items
     .map((item, itemIndex) => ({ ...item, sku: item.sku.trim(), itemIndex }))
     .filter((item) => item.sku)
     .map((item) => {
@@ -70,6 +113,7 @@ export function buildQuote(
       };
     });
 
+  const lines = groupQuoteLinesByOffer(rawLines);
   const subtotalFinal = roundMoney(lines.reduce((sum, line) => sum + line.finalTotal, 0));
   const tax = roundMoney(lines.reduce((sum, line) => sum + (line.product?.taxable ? line.finalTotal * taxRate : 0), 0));
 

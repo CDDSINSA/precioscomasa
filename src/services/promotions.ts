@@ -1,4 +1,4 @@
-import type { ImportedPromotionRow, OfferRule, Promotion } from "../types/domain";
+import type { ImportedPromotionRow, OfferRule, Product, Promotion } from "../types/domain";
 import { dealSkus } from "./dealConfig";
 
 export type AvailableOfferGroup = {
@@ -167,12 +167,18 @@ export function eligibleRules(rules: OfferRule[], sku: string, segment: string, 
 
 export function ruleMatchesQuantity(rule: OfferRule, quantity: number) {
   if (!Number.isFinite(quantity) || quantity <= 0) return false;
+  if (rule.deal?.kind === "PACK") return quantity >= rule.deal.quantity;
+  if (rule.deal?.kind === "MIX_MATCH") return quantity >= rule.deal.quantity;
+  if (rule.deal?.kind === "BUY_GET") return quantity >= rule.deal.buyQuantity;
   const thresholdQuantity = minimumQuantityForRule(rule);
   const thresholdType = effectiveThresholdType(rule);
   return thresholdType === "MINIMUM" ? quantity >= thresholdQuantity : quantity === thresholdQuantity;
 }
 
 export function minimumQuantityForRule(rule: OfferRule) {
+  if (rule.deal?.kind === "PACK") return rule.deal.quantity;
+  if (rule.deal?.kind === "MIX_MATCH") return rule.deal.quantity;
+  if (rule.deal?.kind === "BUY_GET") return rule.deal.buyQuantity;
   return effectiveThresholdQuantity(rule);
 }
 
@@ -207,8 +213,13 @@ export function availableOfferGroups(rules: OfferRule[], sku: string, segment: s
   return [...groups.values()];
 }
 
-export function sortOfferGroupsByUnitPrice(groups: AvailableOfferGroup[], listPrice: number) {
+export function sortOfferGroupsByUnitPrice(groups: AvailableOfferGroup[], listPrice: number, quantity?: number) {
   return [...groups].sort((left, right) => {
+    if (typeof quantity === "number" && quantity > 0) {
+      const leftApplies = left.rules.every((rule) => ruleMatchesQuantity(rule, quantity));
+      const rightApplies = right.rules.every((rule) => ruleMatchesQuantity(rule, quantity));
+      if (leftApplies !== rightApplies) return leftApplies ? -1 : 1;
+    }
     const leftPrice = estimateOfferGroupUnitPrice(listPrice, left);
     const rightPrice = estimateOfferGroupUnitPrice(listPrice, right);
     if (leftPrice !== rightPrice) return leftPrice - rightPrice;
@@ -218,6 +229,37 @@ export function sortOfferGroupsByUnitPrice(groups: AvailableOfferGroup[], listPr
 
 export function estimateOfferGroupUnitPrice(listPrice: number, group: AvailableOfferGroup) {
   return estimateUnitPrice(listPrice, group.primary);
+}
+
+export function estimateKitTotals(group: AvailableOfferGroup, catalog: Product[], quantity: number = 1) {
+  const safeQuantity = Math.max(1, Math.round(quantity) || 1);
+  let totalList = 0;
+  let totalFinal = 0;
+
+  for (const rule of group.rules) {
+    const product = catalog.find((item) => item.sku === rule.sku);
+    const perKit = Math.max(1, minimumQuantityForRule(rule), rule.minQuantity ?? 0);
+    const itemQuantity = safeQuantity * perKit;
+
+    const listPrice = product?.listPrice;
+    const unitPrice = product
+      ? estimateUnitPrice(product.listPrice, rule)
+      : (rule.fixedPrice !== undefined && rule.discountType !== "PERCENT_OFF" ? rule.fixedPrice : 0);
+
+    const itemListTotal = (listPrice ?? unitPrice) * itemQuantity;
+    const itemFinalTotal = unitPrice * itemQuantity;
+
+    totalList += itemListTotal;
+    totalFinal += itemFinalTotal;
+  }
+
+  const savings = Math.max(0, totalList - totalFinal);
+
+  return {
+    totalList: Math.round((totalList + Number.EPSILON) * 100) / 100,
+    totalFinal: Math.round((totalFinal + Number.EPSILON) * 100) / 100,
+    savings: Math.round((savings + Number.EPSILON) * 100) / 100,
+  };
 }
 
 export function estimateLineTotal(listPrice: number, quantity: number, rule?: OfferRule) {
@@ -264,10 +306,17 @@ export function findBestRule(rules: OfferRule[], sku: string, segment: string, q
   }, undefined);
 }
 
+export function isUniversalSegment(segment?: string | null) {
+  const clean = String(segment ?? "").trim().toLowerCase();
+  return clean === "-" || clean === "" || clean === "todos los segmentos" || clean === "universal" || clean === "general";
+}
+
 export function ruleAppliesToSegment(rule: Pick<OfferRule, "segment">, segment: string) {
-  const ruleSegment = rule.segment.trim();
-  const customerSegment = segment.trim();
-  return ruleSegment === "-" || ruleSegment === "" || (!!customerSegment && customerSegment !== "-" && ruleSegment === customerSegment);
+  const ruleSegment = String(rule.segment ?? "").trim();
+  const customerSegment = String(segment ?? "").trim();
+  if (isUniversalSegment(ruleSegment)) return true;
+  if (!customerSegment || isUniversalSegment(customerSegment)) return false;
+  return ruleSegment.toLowerCase() === customerSegment.toLowerCase();
 }
 
 function effectiveThresholdType(rule: OfferRule) {

@@ -8,7 +8,7 @@ import { loadCatalog, sampleCatalog } from "../../services/catalog";
 import { exportQuotePdf } from "../../services/pdf";
 import { segments, sampleOfferRules } from "../../services/promotions";
 import { buildQuote, formatCurrency } from "../../services/quote";
-import { allocationLabel } from "../../services/dealEngine";
+import { allocationLabel, allocationLines } from "../../services/dealEngine";
 import { issueQuote, loadOfferRulesForSkus, loadProductsBySkus } from "../../services/supabase";
 import type { AppProfile, Customer, OfferRule } from "../../types/domain";
 import type { Product, QuoteItem, QuoteSummary } from "../../types/domain";
@@ -28,6 +28,7 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [customerModalOpen, setCustomerModalOpen] = useState(false);
   const [confirmIssueOpen, setConfirmIssueOpen] = useState(false);
+  const [resumeSkuAfterCustomer, setResumeSkuAfterCustomer] = useState(false);
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [catalog, setCatalog] = useState(sampleCatalog);
   const [offerRules, setOfferRules] = useState<OfferRule[]>(sampleOfferRules);
@@ -115,6 +116,10 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
     setCustomer(selectedCustomer);
     setSegment(selectedCustomer.segment);
     if (compareSegment === selectedCustomer.segment) setCompareSegment("");
+    if (resumeSkuAfterCustomer) {
+      setResumeSkuAfterCustomer(false);
+      setSkuModalOpen(true);
+    }
   }
 
   function clearCustomer() {
@@ -298,10 +303,16 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
       {skuModalOpen ? (
         <SkuSearchModal
           catalog={catalog}
+          customer={customer}
           segment={segment}
           inventoryEnabled={inventoryFeatureEnabled}
           onCatalogProductsFound={mergeCatalogProducts}
           onClose={() => setSkuModalOpen(false)}
+          onRequestSelectCustomer={() => {
+            setSkuModalOpen(false);
+            setResumeSkuAfterCustomer(true);
+            setCustomerModalOpen(true);
+          }}
           onAddItems={(newItems) => setItems((current) => [...current, ...newItems])}
         />
       ) : null}
@@ -312,7 +323,15 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
           onAppendItems={(newItems) => setItems((current) => [...current, ...newItems])}
         />
       ) : null}
-      {customerModalOpen ? <CustomerSearchModal onClose={() => setCustomerModalOpen(false)} onSelect={selectCustomer} /> : null}
+      {customerModalOpen ? (
+        <CustomerSearchModal
+          onClose={() => {
+            setCustomerModalOpen(false);
+            setResumeSkuAfterCustomer(false);
+          }}
+          onSelect={selectCustomer}
+        />
+      ) : null}
       {confirmIssueOpen ? (
         <IssueConfirmModal
           customer={customer}
@@ -402,18 +421,55 @@ function QuoteTable({
               </tr>
             </thead>
             <tbody>
-              {quote.lines.map((line, index) => (
-                <tr key={`${line.sku}-${index}`}>
-                  <td className="product-cell">
-                    <ProductImage src={line.imageUrl} alt={line.product?.description ?? "Producto no encontrado"} />
-                    <div>
-                      <input value={items[line.itemIndex ?? index]?.sku ?? ""} onChange={(event) => onChange(line.itemIndex ?? index, { sku: event.target.value })} placeholder="SKU" />
-                      <strong>{line.product?.description ?? "Producto no encontrado"}</strong>
-                      <span>{quote.pricingError ? "Precio pendiente de calcular" : allocationLabel(line.allocations) || "Sin oferta aplicada"}</span>
-                    </div>
-                  </td>
+              {quote.lines.map((line, index) => {
+                const isKit =
+                  line.appliedOffer?.type === "KIT_OFFER" ||
+                  line.appliedOffer?.deal?.kind === "KIT" ||
+                  line.allocations?.some((a) => a.role === "bundle" || a.offers.some((o) => o.type === "KIT_OFFER" || o.deal?.kind === "KIT"));
+                const kitOffer =
+                  line.appliedOffer?.type === "KIT_OFFER" || line.appliedOffer?.deal?.kind === "KIT"
+                    ? line.appliedOffer
+                    : line.allocations?.flatMap((a) => a.offers).find((o) => o.type === "KIT_OFFER" || o.deal?.kind === "KIT");
+
+                return (
+                  <tr key={`${line.sku}-${line.itemIndex ?? index}`} className={isKit ? "quote-row-kit" : ""}>
+                    <td className="product-cell">
+                      <ProductImage src={line.imageUrl} alt={line.product?.description ?? "Producto no encontrado"} />
+                      <div>
+                        <input value={items[line.itemIndex ?? index]?.sku ?? ""} onChange={(event) => onChange(line.itemIndex ?? index, { sku: event.target.value })} placeholder="SKU" />
+                        <strong>{line.product?.description ?? "Producto no encontrado"}</strong>
+                        <div className="allocation-lines">
+                          {quote.pricingError ? (
+                            <span className="allocation-line error">Precio pendiente de calcular</span>
+                          ) : line.allocations?.length ? (
+                            allocationLines(line.allocations).map((text, i) => (
+                              <span key={i} className="allocation-line">{text}</span>
+                            ))
+                          ) : (
+                            <span className="allocation-line muted">Sin oferta aplicada</span>
+                          )}
+                        </div>
+                      </div>
+                    </td>
                   <td className="quantity-cell">
-                    <input type="number" min="0.0001" step="any" value={line.quantity} onChange={(event) => onChange(line.itemIndex ?? index, { quantity: Number(event.target.value) })} />
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={line.quantity}
+                      onChange={(event) => {
+                        const raw = event.target.value;
+                        const parsed = parseInt(raw, 10);
+                        onChange(line.itemIndex ?? index, {
+                          quantity: Number.isNaN(parsed) ? 1 : Math.max(1, parsed),
+                        });
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "." || event.key === "," || event.key === "e" || event.key === "E" || event.key === "-") {
+                          event.preventDefault();
+                        }
+                      }}
+                    />
                     <span className={line.savings > 0 ? "saving-note active" : "saving-note"}>
                       Ahorro {quote.pricingError ? "—" : formatCurrency(line.savings)}
                     </span>
@@ -422,7 +478,8 @@ function QuoteTable({
                   <td><strong>{quote.pricingError ? "—" : formatCurrency(line.finalTotal)}</strong></td>
                   <td><button className="icon-btn danger" title="Eliminar línea" onClick={() => onRemove(line.itemIndex ?? index)}><Trash2 size={16} /></button></td>
                 </tr>
-              ))}
+              );
+            })}
               {!quote.lines.length ? (
                 <tr className="quote-empty-row">
                   <td colSpan={5}>
@@ -487,12 +544,20 @@ function ComparePanel({
             </div>
             <div className="compare-table-body" ref={scrollRef} onScroll={onScroll}>
               {baseQuote.lines.map((baseLine, index) => {
-                const line = compared.lines[index];
+                const line = compared.lines.find((l) => l.itemIndex === baseLine.itemIndex) ?? compared.lines.find((l) => l.sku === baseLine.sku) ?? compared.lines[index];
                 return (
                   <div className="compare-table-row" key={`${compareSegment}-${baseLine.sku}-${index}`}>
                     <div>
                       <strong>{line?.sku ?? baseLine.sku}</strong>
-                      <span>{allocationLabel(line?.allocations) || "Sin oferta aplicada"}</span>
+                      <div className="allocation-lines">
+                        {line?.allocations?.length ? (
+                          allocationLines(line.allocations).map((text, i) => (
+                            <span key={i} className="allocation-line">{text}</span>
+                          ))
+                        ) : (
+                          <span className="allocation-line muted">Sin oferta aplicada</span>
+                        )}
+                      </div>
                       <small>Ahorro {formatCurrency(line?.savings ?? 0)}</small>
                     </div>
                     <p>{formatCurrency(line?.finalTotal ?? 0)}</p>

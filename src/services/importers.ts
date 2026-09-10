@@ -74,7 +74,7 @@ export function parseQuoteText(text: string): QuoteItem[] {
       const rawQuantity = hasHeader ? row[quantityIndex] : row[1];
       return {
         sku: String(rawSku).trim(),
-        quantity: Math.max(1, toNumber(rawQuantity) ?? 1),
+        quantity: Math.max(1, Math.round(toNumber(rawQuantity) ?? 1)),
       };
     })
     .filter((item) => item.sku);
