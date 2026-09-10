@@ -584,3 +584,52 @@ test("buildQuote groups kit companion items together even if added at separate p
   assert.equal(summary.lines[2].itemIndex, 1); // GYPSUM was items[1]
   assert.equal(summary.lines[3].itemIndex, 2); // PAINT was items[2]
 });
+
+test("kit companion detection is resilient to trailing spaces in SKUs or cart items", () => {
+  const kitRule1 = rule("kit-49332", {
+    promotionId: "49332",
+    promotionName: "COMASA_BIFOLIAR_S",
+    type: "KIT_OFFER",
+    sku: "140513334   ", // Note trailing whitespace from database
+    discountPercent: 100,
+    minQuantity: 1,
+    segment: "1102",
+  });
+  const kitRule2 = rule("kit-49332", {
+    promotionId: "49332",
+    promotionName: "COMASA_BIFOLIAR_S",
+    type: "KIT_OFFER",
+    sku: "163744160   ", // Note trailing whitespace from database
+    fixedPrice: 278.26,
+    minQuantity: 1,
+    segment: "1102",
+  });
+
+  // availableOfferGroups should locate the kit even if queried with or without whitespace:
+  const groups = pricing.availableOfferGroups([kitRule1, kitRule2], "140513334", "1102");
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].isKit, true);
+  assert.equal(groups[0].rules.length, 2);
+
+  // Companion check logic with whitespace:
+  function normSku(val) {
+    return String(val ?? "").trim();
+  }
+  function kitMissingCompanionSkus(offerGroup, currentSku, currentItems = []) {
+    if (!offerGroup.isKit) return [];
+    const cleanCurrentSku = normSku(currentSku);
+    const cartSkus = new Set(currentItems.map((item) => normSku(item.sku)).filter(Boolean));
+    const companionSkus = [...new Set(offerGroup.rules.map((r) => normSku(r.sku)))].filter((sku) => sku && sku !== cleanCurrentSku);
+    return companionSkus.filter((sku) => !cartSkus.has(sku));
+  }
+
+  // Cart contains companion SKU 163744160 (clean or with whitespace):
+  const cartWithCompanion = [{ sku: "163744160", quantity: 1 }];
+  const missing = kitMissingCompanionSkus(groups[0], "140513334", cartWithCompanion);
+  assert.equal(missing.length, 0, "Companion SKU already in cart should not be marked as missing");
+
+  // Cart does NOT contain companion SKU:
+  const emptyCart = [];
+  const missingInEmpty = kitMissingCompanionSkus(groups[0], "140513334", emptyCart);
+  assert.deepEqual(missingInEmpty, ["163744160"]);
+});

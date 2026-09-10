@@ -1171,7 +1171,7 @@ function mapOfferRules(rows: PromotionRuleRow[], promotions: Map<string, Promoti
       startsAt: promotions.get(row.promotion_id!)?.starts_at ?? undefined,
       endsAt: promotions.get(row.promotion_id!)?.ends_at ?? undefined,
       type: row.offer_type!,
-      sku: row.sku!,
+      sku: row.sku!.trim(),
       segment: row.segment ?? " - ",
       minQuantity: optionalNumber(row.min_quantity),
       fixedPrice: optionalNumber(row.fixed_price),
@@ -1197,7 +1197,7 @@ function mapOfferConfigurationRows(rows: PromotionRuleRow[], promotions: Map<str
       startsAt: promotions.get(row.promotion_id!)?.starts_at ?? undefined,
       endsAt: promotions.get(row.promotion_id!)?.ends_at ?? undefined,
       type: row.offer_type!,
-      sku: row.sku!,
+      sku: row.sku!.trim(),
       segment: row.segment ?? " - ",
       importedQuantity: optionalNumber(row.min_quantity),
       thresholdQuantity: toThresholdQuantity(row.threshold_quantity),
@@ -1242,7 +1242,7 @@ function mapCustomer(row: CustomerRow): Customer {
 
 function mapProduct(row: ProductRow): Product {
   return {
-    sku: row.sku,
+    sku: row.sku.trim(),
     legacyNumber: row.legacy_number ?? undefined,
     description: row.description,
     unitOfMeasure: row.unit_of_measure ?? undefined,

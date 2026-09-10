@@ -1,4 +1,4 @@
-import { Layers3, PackagePlus, Search, UserCheck, UserSearch, X } from "lucide-react";
+import { Info, Layers3, PackagePlus, Search, UserCheck, UserSearch, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, Badge } from "../../components/ui";
 import { inventoryStoreId } from "../../config/features";
@@ -13,7 +13,6 @@ import {
   minimumQuantityForRule,
   ruleMatchesQuantity,
   sampleOfferRules,
-  sortOfferGroupsByUnitPrice,
 } from "../../services/promotions";
 import type { AvailableOfferGroup } from "../../services/promotions";
 import { formatCurrency } from "../../services/quote";
@@ -29,6 +28,7 @@ type Props = {
   catalog: Product[];
   customer?: Customer | null;
   segment: string;
+  currentItems?: QuoteItem[];
   inventoryEnabled: boolean;
   onCatalogProductsFound: (products: Product[]) => void;
   onClose: () => void;
@@ -40,6 +40,7 @@ export function SkuSearchModal({
   catalog,
   customer,
   segment,
+  currentItems = [],
   inventoryEnabled,
   onCatalogProductsFound,
   onClose,
@@ -48,7 +49,6 @@ export function SkuSearchModal({
 }: Props) {
   const [term, setTerm] = useState("");
   const [quantity, setQuantity] = useState(1);
-  const [selectedOfferKey, setSelectedOfferKey] = useState("");
   const [addedMessage, setAddedMessage] = useState("");
   const [offerRules, setOfferRules] = useState<OfferRule[]>([]);
   const hasCustomer = Boolean(customer?.customerId || (customer?.displayName && segment) || (segment && !isUniversalSegment(segment)));
@@ -87,23 +87,34 @@ export function SkuSearchModal({
   const [selectedSku, setSelectedSku] = useState(results[0]?.sku ?? "");
   const selected = results.find((product) => product.sku === selectedSku) ?? results[0];
   const offerGroups = useMemo(
-    () => (hasCustomer && selected ? sortOfferGroupsByUnitPrice(availableOfferGroups(offerRules, selected.sku, segment), selected.listPrice, quantity) : []),
-    [hasCustomer, offerRules, selected, segment, quantity],
+    () => {
+      if (!hasCustomer || !selected) return [];
+      const baseGroups = availableOfferGroups(offerRules, selected.sku, segment);
+      return [...baseGroups].sort((left, right) =>
+        compareOfferGroups(left, right, selected, quantity, currentItems, catalog)
+      );
+    },
+    [catalog, currentItems, hasCustomer, offerRules, quantity, selected, segment],
   );
 
   const applicableOfferGroups = useMemo(
-    () => offerGroups.filter((group) => group.rules.every((offer) => ruleMatchesQuantity(offer, quantity))),
-    [offerGroups, quantity],
+    () =>
+      offerGroups.filter((group) => {
+        const matchesQty = group.rules.every((offer) => ruleMatchesQuantity(offer, quantity));
+        if (!matchesQty) return false;
+        if (group.isKit && selected?.sku) {
+          const missing = kitMissingCompanionSkus(group, selected.sku, currentItems);
+          if (missing.length > 0) return false;
+        }
+        return true;
+      }),
+    [currentItems, offerGroups, quantity, selected?.sku],
   );
 
-  const selectedOffer = useMemo(() => {
-    if (selectedOfferKey === "LIST_PRICE") return undefined;
-    if (selectedOfferKey) {
-      const match = applicableOfferGroups.find((group) => group.key === selectedOfferKey);
-      if (match) return match;
-    }
-    return hasCustomer ? applicableOfferGroups[0] : undefined;
-  }, [applicableOfferGroups, hasCustomer, selectedOfferKey]);
+  const selectedOffer = useMemo(
+    () => (hasCustomer && applicableOfferGroups.length > 0 ? applicableOfferGroups[0] : undefined),
+    [applicableOfferGroups, hasCustomer],
+  );
 
   useEffect(() => {
     let active = true;
@@ -304,25 +315,29 @@ export function SkuSearchModal({
 
   function selectSku(sku: string) {
     setSelectedSku(sku);
-    setSelectedOfferKey("");
     setAddedMessage("");
   }
 
   function addSelected(product?: Product, offer?: AvailableOfferGroup) {
     if (!product) return;
+    const cleanSku = normSku(product.sku);
     const safeQuantity = Math.max(1, Math.round(quantity) || 1);
-    const effectiveOffer = offer && offer.rules.every((rule) => ruleMatchesQuantity(rule, safeQuantity)) ? offer : undefined;
-    const items = effectiveOffer?.isKit
-      ? effectiveOffer.rules.map((rule) => ({ sku: rule.sku, quantity: safeQuantity * Math.max(1, minimumQuantityForRule(rule), rule.minQuantity ?? 0) }))
-      : [{ sku: product.sku, quantity: safeQuantity }];
+    const effectiveOffer =
+      offer &&
+      offer.rules.every((rule) => ruleMatchesQuantity(rule, safeQuantity)) &&
+      (!offer.isKit || kitMissingCompanionSkus(offer, cleanSku, currentItems).length === 0)
+        ? offer
+        : undefined;
+
+    const items = [{ sku: cleanSku, quantity: safeQuantity }];
 
     onAddItems(items);
     setAddedMessage(
       effectiveOffer?.isKit
-        ? `Kit agregado: ${items.length} SKU`
+        ? `SKU agregado (Completa kit ${effectiveOffer.primary.id}): ${cleanSku}`
         : effectiveOffer
-        ? `SKU agregado con oferta: ${product.sku}`
-        : `SKU agregado (Precio de lista): ${product.sku}`
+        ? `SKU agregado con oferta: ${cleanSku}`
+        : `SKU agregado (Precio de lista): ${cleanSku}`
     );
   }
 
@@ -408,12 +423,16 @@ export function SkuSearchModal({
                   onClick={() => selectSku(product.sku)}
                 >
                   <ProductImage src={productImageUrl(product.sku)} alt={product.description} />
-                  <span>
+                  <span className="sku-item-info">
                     <strong>{product.sku}</strong>
                     <small>{product.description}</small>
                     {inventoryEnabled ? <em>{stockLabel(inventory.get(product.sku))}</em> : null}
                     <em>{product.partNumber ?? "Sin número de parte"}</em>
                   </span>
+                  <div className="sku-item-price">
+                    <span className="sku-price-label">Precio base</span>
+                    <strong className="sku-price-value">{formatCurrency(product.listPrice)}</strong>
+                  </div>
                 </button>
               ))}
               {canShowMoreResults ? (
@@ -431,9 +450,17 @@ export function SkuSearchModal({
             {selected ? (
               <>
                 <div className="selected-product">
-                  <strong>{selected.sku}</strong>
-                  <span>{selected.description}</span>
-                  <p>{formatCurrency(selected.listPrice)}</p>
+                  <div className="selected-product-header">
+                    <div className="selected-product-title">
+                      <strong>{selected.sku}</strong>
+                      <span>{selected.description}</span>
+                      {selected.partNumber ? <em className="selected-part-number">Parte: {selected.partNumber}</em> : null}
+                    </div>
+                    <div className="selected-base-price-badge">
+                      <span className="selected-base-price-label">Precio de lista</span>
+                      <strong className="selected-base-price-val">{formatCurrency(selected.listPrice)}</strong>
+                    </div>
+                  </div>
                   {hasCustomer ? (
                     <div className="sku-customer-badge">
                       <UserCheck size={13} />
@@ -471,14 +498,14 @@ export function SkuSearchModal({
                       </div>
                     </div>
 
-                    <div className="offer-row selected static-list-price">
+                    <div className="sku-base-notice">
+                      <Info size={16} />
                       <div>
-                        <strong>Precio de lista</strong>
-                        <span>Tarifa base estándar</span>
+                        <strong>Precio regular de lista</strong>
+                        <p>
+                          Sin cliente seleccionado. Este producto se cotizará con su <strong>precio de lista base ({formatCurrency(selected.listPrice)})</strong>.
+                        </p>
                       </div>
-                      <Badge tone="neutral">Base</Badge>
-                      <small>Sin descuento promocional</small>
-                      <p>{formatCurrency(selected.listPrice)}</p>
                     </div>
                   </div>
                 ) : (
@@ -488,95 +515,138 @@ export function SkuSearchModal({
 
                     {!offerLoading ? (
                       <>
-                        <button
-                          className={!selectedOffer ? "offer-row selected" : "offer-row"}
-                          type="button"
-                          onClick={() => setSelectedOfferKey("LIST_PRICE")}
-                        >
-                          <div>
-                            <strong>Precio de lista</strong>
-                            <span>Tarifa base regular</span>
-                          </div>
-                          <Badge tone="neutral">Base</Badge>
-                          <small>Sin condiciones ni mínimo</small>
-                          <p>{formatCurrency(selected.listPrice)}</p>
-                        </button>
+                        {offerGroups.length > 0 ? (
+                          <>
+                            <div className="offer-section-header">
+                              <h4>Ofertas y promociones disponibles ({offerGroups.length})</h4>
+                            </div>
+                            {offerGroups.map((offerGroup) => {
+                              const missingCompanions =
+                                offerGroup.isKit && selected?.sku
+                                  ? kitMissingCompanionSkus(offerGroup, selected.sku, currentItems)
+                                  : [];
+                              const hasMissingCompanions = missingCompanions.length > 0;
+                              const matchesQty = offerGroup.rules.every((offer) => ruleMatchesQuantity(offer, quantity));
+                              const applies = matchesQty && !hasMissingCompanions;
+                              const isUniversal = isUniversalSegment(offerGroup.primary.segment);
+                              const isBestOffer = selectedOffer?.key === offerGroup.key;
+                              const minQty = Math.max(...offerGroup.rules.map(minimumQuantityForRule));
 
-                        {offerGroups.map((offerGroup) => {
-                          const applies = offerGroup.rules.every((offer) => ruleMatchesQuantity(offer, quantity));
-                          const isUniversal = isUniversalSegment(offerGroup.primary.segment);
-                          const isSelected = selectedOffer?.key === offerGroup.key;
-                          const minQty = Math.max(...offerGroup.rules.map(minimumQuantityForRule));
+                              const promoUnitPrice = estimateOfferGroupUnitPrice(selected.listPrice, offerGroup);
+                              const unitSavings = Math.max(0, selected.listPrice - promoUnitPrice);
+                              const totalSavings = unitSavings * quantity;
+                              const percentSavings = selected.listPrice > 0 ? Math.round((unitSavings / selected.listPrice) * 100) : 0;
 
-                          return (
-                            <button
-                              className={isSelected ? "offer-row selected" : applies ? "offer-row" : "offer-row disabled"}
-                              key={offerGroup.key}
-                              type="button"
-                              disabled={!applies}
-                              onClick={() => {
-                                if (applies) setSelectedOfferKey(offerGroup.key);
-                              }}
-                              title={!applies ? `Inhabilitada: requiere al menos ${minQty} unidades para aplicar (actual: ${quantity})` : undefined}
-                            >
-                              <div>
-                                <strong>{offerGroup.primary.id}</strong>
-                                <span>{offerGroup.primary.promotionName}</span>
-                              </div>
-                              <Badge tone={!applies ? "neutral" : isUniversal ? "info" : "success"}>
-                                {!applies
-                                  ? `Requiere mín. ${minQty} u.`
-                                  : offerGroup.isKit
-                                  ? `Kit ${offerGroup.skuCount} SKU`
-                                  : isUniversal
-                                  ? "Universal"
-                                  : `Segmento ${offerGroup.primary.segment.trim() || segment}`}
-                              </Badge>
-                              <small>{offerGroup.primary.deal ? dealDescription(offerGroup.primary.deal) : thresholdLabel(offerGroup.rules)}</small>
-                              {offerGroup.isKit ? (
-                                <>
-                                  <div className="kit-items">
-                                    {offerGroup.rules.map((offer) => (
-                                      <KitItemRow catalog={catalog} key={`${offer.id}-${offer.sku}`} offer={offer} quantity={quantity} />
-                                    ))}
+                              return (
+                                <div
+                                  className={isBestOffer ? "offer-row best-offer" : applies ? "offer-row" : "offer-row disabled"}
+                                  key={offerGroup.key}
+                                  title={
+                                    hasMissingCompanions
+                                      ? `Inhabilitada: requiere que el resto de productos del kit ya estén en la cotización (falta: ${missingCompanions.join(", ")})`
+                                      : !matchesQty
+                                      ? `Inhabilitada: requiere al menos ${minQty} unidades para aplicar (actual: ${quantity})`
+                                      : undefined
+                                  }
+                                >
+                                  <div>
+                                    <strong>{offerGroup.primary.id}</strong>
+                                    <span>{offerGroup.primary.promotionName}</span>
                                   </div>
-                                  {(() => {
-                                    const kitTotals = estimateKitTotals(offerGroup, catalog, quantity);
-                                    return (
-                                      <div className="kit-card-footer">
-                                        <div className="kit-card-totals">
-                                          <span className="kit-total-label">
-                                            Total kit{quantity > 1 ? ` (${quantity} kits)` : ""}:
-                                          </span>
-                                          <strong className="kit-total-price">
-                                            {formatCurrency(kitTotals.totalFinal)}
-                                          </strong>
-                                        </div>
-                                        {kitTotals.savings > 0 ? (
-                                          <span className="kit-total-savings">
-                                            Ahorro total {formatCurrency(kitTotals.savings)}
-                                          </span>
-                                        ) : null}
+                                  <div className="offer-badges">
+                                    {isBestOffer ? (
+                                      <Badge tone="success">Aplica automáticamente</Badge>
+                                    ) : null}
+                                    <Badge tone={!applies ? "neutral" : isUniversal ? "info" : "success"}>
+                                      {hasMissingCompanions
+                                        ? `Kit incompleto (faltan ${missingCompanions.length} SKU)`
+                                        : !matchesQty
+                                        ? `Requiere mín. ${minQty} u.`
+                                        : offerGroup.isKit
+                                        ? `Kit ${offerGroup.skuCount} SKU`
+                                        : isUniversal
+                                        ? "Universal"
+                                        : `Segmento ${offerGroup.primary.segment.trim() || segment}`}
+                                    </Badge>
+                                  </div>
+                                  <small>{offerGroup.primary.deal ? dealDescription(offerGroup.primary.deal) : thresholdLabel(offerGroup.rules)}</small>
+                                  {offerGroup.isKit ? (
+                                    <>
+                                      <div className="kit-items">
+                                        {offerGroup.rules.map((offer) => {
+                                          const cleanOfferSku = normSku(offer.sku);
+                                          const isCurrent = cleanOfferSku === normSku(selected?.sku);
+                                          const inCart = currentItems.some((item) => normSku(item.sku) === cleanOfferSku);
+                                          return (
+                                            <KitItemRow
+                                              catalog={catalog}
+                                              key={`${offer.id}-${cleanOfferSku}`}
+                                              offer={offer}
+                                              quantity={quantity}
+                                              isCurrentSku={isCurrent}
+                                              isInCart={inCart}
+                                            />
+                                          );
+                                        })}
                                       </div>
-                                    );
-                                  })()}
-                                </>
-                              ) : offerGroup.primary.deal && offerGroup.primary.deal.kind !== "UNIT" ? (
-                                <p>Se evalúa con los productos de la cotización</p>
-                              ) : (
-                                <p>{formatCurrency(estimateOfferGroupUnitPrice(selected.listPrice, offerGroup))}</p>
-                              )}
-                              {!applies ? (
-                                <span className="offer-row-unmet">
-                                  Inhabilitada: requiere al menos {minQty} unidades para aplicar (cantidad actual: {quantity})
-                                </span>
-                              ) : null}
-                            </button>
-                          );
-                        })}
-
-                        {!offerError && !offerGroups.length ? (
-                          <p className="empty-copy">No hay ofertas promocionales disponibles para este SKU en el segmento {segment}.</p>
+                                      {(() => {
+                                        const kitTotals = estimateKitTotals(offerGroup, catalog, quantity);
+                                        return (
+                                          <div className="kit-card-footer">
+                                            <div className="kit-card-totals">
+                                              <span className="kit-total-label">
+                                                Total kit{quantity > 1 ? ` (${quantity} kits)` : ""}:
+                                              </span>
+                                              <strong className="kit-total-price">
+                                                {formatCurrency(kitTotals.totalFinal)}
+                                              </strong>
+                                            </div>
+                                            {kitTotals.savings > 0 ? (
+                                              <span className="kit-total-savings">
+                                                Ahorro total {formatCurrency(kitTotals.savings)}
+                                              </span>
+                                            ) : null}
+                                          </div>
+                                        );
+                                      })()}
+                                    </>
+                                  ) : offerGroup.primary.deal && offerGroup.primary.deal.kind !== "UNIT" ? (
+                                    <p>Se evalúa con los productos de la cotización</p>
+                                  ) : (
+                                    <div className="offer-card-footer">
+                                      <div className="offer-card-totals">
+                                        <span className="offer-unit-label">Precio promo unitario:</span>
+                                        <strong className="offer-unit-price">{formatCurrency(promoUnitPrice)}</strong>
+                                      </div>
+                                      {unitSavings > 0 ? (
+                                        <span className="kit-total-savings">
+                                          Ahorro {quantity > 1 ? `total ${formatCurrency(totalSavings)}` : formatCurrency(unitSavings)}
+                                          {percentSavings > 0 ? ` (${percentSavings}%)` : ""}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  )}
+                                  {!applies ? (
+                                    <span className="offer-row-unmet">
+                                      {hasMissingCompanions
+                                        ? `Inhabilitada: requiere que el resto de productos del kit ya estén agregados en la cotización (falta agregar: ${missingCompanions.join(", ")})`
+                                        : `Inhabilitada: requiere al menos ${minQty} unidades para aplicar (cantidad actual: ${quantity})`}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              );
+                            })}
+                          </>
+                        ) : !offerError ? (
+                          <div className="sku-base-notice">
+                            <Info size={16} />
+                            <div>
+                              <strong>Sin promociones configuradas</strong>
+                              <p>
+                                Este SKU no cuenta con promociones activas para el segmento {segment || "-"}. Se aplicará el <strong>precio base regular de {formatCurrency(selected.listPrice)}</strong>.
+                              </p>
+                            </div>
+                          </div>
                         ) : null}
                       </>
                     ) : null}
@@ -590,7 +660,7 @@ export function SkuSearchModal({
                   return (
                     <div className="selected-kit-banner">
                       <div className="selected-kit-banner-row">
-                        <span>Total del kit: <strong>{formatCurrency(kitTotals.totalFinal)}</strong></span>
+                        <span>Total del kit{quantity > 1 ? ` (${quantity} kits)` : ""}: <strong>{formatCurrency(kitTotals.totalFinal)}</strong></span>
                         {kitTotals.savings > 0 ? (
                           <span className="selected-kit-savings">
                             Ahorro total: <strong>{formatCurrency(kitTotals.savings)}</strong>
@@ -599,12 +669,34 @@ export function SkuSearchModal({
                       </div>
                     </div>
                   );
-                })() : null}
+                })() : selectedOffer ? (() => {
+                  const promoUnitPrice = estimateOfferGroupUnitPrice(selected.listPrice, selectedOffer);
+                  const lineTotal = promoUnitPrice * quantity;
+                  const listTotal = selected.listPrice * quantity;
+                  const savings = Math.max(0, listTotal - lineTotal);
+                  return (
+                    <div className="selected-kit-banner">
+                      <div className="selected-kit-banner-row">
+                        <span>Total ({quantity} {quantity === 1 ? "unidad" : "unidades"}): <strong>{formatCurrency(lineTotal)}</strong></span>
+                        {savings > 0 ? (
+                          <span className="selected-kit-savings">
+                            Ahorro total: <strong>{formatCurrency(savings)}</strong>
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })() : (
+                  <div className="selected-base-banner">
+                    <span>Total ({quantity} {quantity === 1 ? "unidad" : "unidades"}): <strong>{formatCurrency(selected.listPrice * quantity)}</strong></span>
+                    <small>Precio de lista base</small>
+                  </div>
+                )}
 
                 <Button onClick={() => addSelected(selected, selectedOffer)}>
                   <PackagePlus size={16} />
                   {selectedOffer?.isKit
-                    ? "Agregar kit"
+                    ? "Agregar SKU (Completa kit)"
                     : selectedOffer
                     ? "Agregar SKU con oferta"
                     : "Agregar SKU (Precio de lista)"}
@@ -620,8 +712,21 @@ export function SkuSearchModal({
   );
 }
 
-function KitItemRow({ catalog, offer, quantity }: { catalog: Product[]; offer: OfferRule; quantity: number }) {
-  const product = catalog.find((item) => item.sku === offer.sku);
+function KitItemRow({
+  catalog,
+  offer,
+  quantity,
+  isCurrentSku,
+  isInCart,
+}: {
+  catalog: Product[];
+  offer: OfferRule;
+  quantity: number;
+  isCurrentSku?: boolean;
+  isInCart?: boolean;
+}) {
+  const cleanOfferSku = normSku(offer.sku);
+  const product = catalog.find((item) => normSku(item.sku) === cleanOfferSku);
   const safeKitQuantity = Math.max(1, Math.round(quantity) || 1);
   const perKit = Math.max(1, minimumQuantityForRule(offer), offer.minQuantity ?? 0);
   const rowQuantity = safeKitQuantity * perKit;
@@ -632,11 +737,78 @@ function KitItemRow({ catalog, offer, quantity }: { catalog: Product[]; offer: O
 
   return (
     <span className="kit-item">
-      <strong>{offer.sku}</strong>
+      <strong>
+        {cleanOfferSku}
+        {isCurrentSku ? (
+          <em className="kit-item-status current"> (Actual)</em>
+        ) : isInCart ? (
+          <em className="kit-item-status in-cart"> (En cotización)</em>
+        ) : (
+          <em className="kit-item-status missing"> (Falta agregar)</em>
+        )}
+      </strong>
       <small>{product?.description ?? (offer.configurationNote || "Producto pendiente del maestro")}</small>
       <em>{rowQuantity > 1 ? `${rowQuantity} u · ` : ""}{benefitLabel(offer)} - {formatCurrency(finalTotal)}</em>
     </span>
   );
+}
+
+function kitMissingCompanionSkus(offerGroup: AvailableOfferGroup, currentSku: string, currentItems: QuoteItem[] = []): string[] {
+  if (!offerGroup.isKit) return [];
+  const cleanCurrentSku = normSku(currentSku);
+  const cartSkus = new Set(currentItems.map((item) => normSku(item.sku)).filter(Boolean));
+  const companionSkus = [...new Set(offerGroup.rules.map((r) => normSku(r.sku)))].filter((sku) => sku && sku !== cleanCurrentSku);
+  return companionSkus.filter((sku) => !cartSkus.has(sku));
+}
+
+function normSku(val: unknown): string {
+  return String(val ?? "").trim();
+}
+
+function compareOfferGroups(
+  left: AvailableOfferGroup,
+  right: AvailableOfferGroup,
+  product: Product,
+  qty: number,
+  currentItems: QuoteItem[],
+  catalog: Product[],
+): number {
+  const leftMissing = left.isKit ? kitMissingCompanionSkus(left, product.sku, currentItems) : [];
+  const rightMissing = right.isKit ? kitMissingCompanionSkus(right, product.sku, currentItems) : [];
+  const leftMatchesQty = left.rules.every((offer) => ruleMatchesQuantity(offer, qty));
+  const rightMatchesQty = right.rules.every((offer) => ruleMatchesQuantity(offer, qty));
+  const leftApplies = leftMatchesQty && leftMissing.length === 0;
+  const rightApplies = rightMatchesQty && rightMissing.length === 0;
+
+  // 1. Applicable offers always precede non-applicable/disabled offers
+  if (leftApplies !== rightApplies) {
+    return leftApplies ? -1 : 1;
+  }
+
+  // 2. The offer with the greatest total savings wins
+  const leftSavings = left.isKit
+    ? estimateKitTotals(left, catalog, qty).savings
+    : Math.max(0, product.listPrice - estimateOfferGroupUnitPrice(product.listPrice, left)) * qty;
+
+  const rightSavings = right.isKit
+    ? estimateKitTotals(right, catalog, qty).savings
+    : Math.max(0, product.listPrice - estimateOfferGroupUnitPrice(product.listPrice, right)) * qty;
+
+  if (Math.abs(leftSavings - rightSavings) > 0.001) {
+    return rightSavings - leftSavings;
+  }
+
+  // 3. Lowest promo unit price on the selected SKU as tie-breaker
+  const leftRule = left.rules.find((r) => normSku(r.sku) === normSku(product.sku)) ?? left.primary;
+  const rightRule = right.rules.find((r) => normSku(r.sku) === normSku(product.sku)) ?? right.primary;
+  const leftUnitPrice = estimateUnitPrice(product.listPrice, leftRule);
+  const rightUnitPrice = estimateUnitPrice(product.listPrice, rightRule);
+
+  if (Math.abs(leftUnitPrice - rightUnitPrice) > 0.001) {
+    return leftUnitPrice - rightUnitPrice;
+  }
+
+  return left.primary.id.localeCompare(right.primary.id);
 }
 
 function InventoryBreakdown({ inventory }: { inventory?: ProductInventory }) {

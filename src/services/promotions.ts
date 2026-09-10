@@ -183,17 +183,19 @@ export function minimumQuantityForRule(rule: OfferRule) {
 }
 
 export function rulesForSkuSegment(rules: OfferRule[], sku: string, segment: string) {
-  return rules.filter((rule) => (rule.sku === sku || (rule.deal && dealSkus(rule.deal, rule.sku).includes(sku))) && ruleAppliesToSegment(rule, segment));
+  const cleanSku = sku.trim();
+  return rules.filter((rule) => (rule.sku.trim() === cleanSku || (rule.deal && dealSkus(rule.deal, rule.sku).map((s) => s.trim()).includes(cleanSku))) && ruleAppliesToSegment(rule, segment));
 }
 
 export function availableOfferGroups(rules: OfferRule[], sku: string, segment: string): AvailableOfferGroup[] {
   const groups = new Map<string, AvailableOfferGroup>();
+  const cleanSku = sku.trim();
 
-  rulesForSkuSegment(rules, sku, segment).forEach((rule) => {
+  rulesForSkuSegment(rules, cleanSku, segment).forEach((rule) => {
     const kitRules = rule.type === "KIT_OFFER" ? getKitRules(rules, rule, segment) : [rule];
-    const uniqueSkuCount = new Set(kitRules.map((kitRule) => kitRule.sku)).size;
+    const uniqueSkuCount = new Set(kitRules.map((kitRule) => kitRule.sku.trim())).size;
 
-    const key = rule.type === "KIT_OFFER" ? kitGroupKey(rule) : `${rule.promotionId}|${rule.id}|${rule.sku}|${rule.segment}|${rule.minQuantity ?? 0}`;
+    const key = rule.type === "KIT_OFFER" ? kitGroupKey(rule) : `${rule.promotionId.trim()}|${rule.id.trim()}|${rule.sku.trim()}|${rule.segment.trim()}|${rule.minQuantity ?? 0}`;
     if (rule.type === "KIT_OFFER") {
       if (uniqueSkuCount < 2) return;
       const hasConfiguredThreshold = kitRules.some(r => typeof r.thresholdQuantity === "number" && r.thresholdQuantity > 0 && !!r.thresholdType);
@@ -237,7 +239,8 @@ export function estimateKitTotals(group: AvailableOfferGroup, catalog: Product[]
   let totalFinal = 0;
 
   for (const rule of group.rules) {
-    const product = catalog.find((item) => item.sku === rule.sku);
+    const cleanRuleSku = rule.sku.trim();
+    const product = catalog.find((item) => item.sku.trim() === cleanRuleSku);
     const perKit = Math.max(1, minimumQuantityForRule(rule), rule.minQuantity ?? 0);
     const itemQuantity = safeQuantity * perKit;
 
@@ -363,14 +366,15 @@ function getKitRules(rules: OfferRule[], offer: OfferRule, segment: string) {
 }
 
 function kitGroupKey(rule: OfferRule) {
-  return `${rule.promotionId}|${rule.id}|${rule.segment.trim() || "-"}`;
+  return `${rule.promotionId.trim()}|${rule.id.trim()}|${rule.segment.trim() || "-"}`;
 }
 
 function uniqueRulesBySku(rules: OfferRule[]) {
   const seen = new Set<string>();
   return rules.filter((rule) => {
-    if (seen.has(rule.sku)) return false;
-    seen.add(rule.sku);
+    const cleanSku = rule.sku.trim();
+    if (seen.has(cleanSku)) return false;
+    seen.add(cleanSku);
     return true;
   });
 }

@@ -305,6 +305,7 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
           catalog={catalog}
           customer={customer}
           segment={segment}
+          currentItems={items.map((item) => ({ ...item, sku: item.sku.trim() })).filter((item) => item.sku)}
           inventoryEnabled={inventoryFeatureEnabled}
           onCatalogProductsFound={mergeCatalogProducts}
           onClose={() => setSkuModalOpen(false)}
@@ -313,7 +314,7 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
             setResumeSkuAfterCustomer(true);
             setCustomerModalOpen(true);
           }}
-          onAddItems={(newItems) => setItems((current) => [...current, ...newItems])}
+          onAddItems={(newItems) => setItems((current) => [...current, ...newItems.map((i) => ({ ...i, sku: i.sku.trim() }))])}
         />
       ) : null}
       {importModalOpen ? (
