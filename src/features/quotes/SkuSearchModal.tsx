@@ -15,8 +15,8 @@ import {
   sampleOfferRules,
 } from "../../services/promotions";
 import type { AvailableOfferGroup } from "../../services/promotions";
-import { formatCurrency } from "../../services/quote";
-import { dealDescription } from "../../services/dealConfig";
+import { buildQuote, formatCurrency } from "../../services/quote";
+import { dealDescription, dealSkus } from "../../services/dealConfig";
 import { loadInventoryForSkus, loadOfferRulesForSkus, loadProductDepartments, loadProductsBySkus, searchProductPageFromSupabase } from "../../services/supabase";
 import type { Customer, Product, ProductDepartment, ProductInventory, QuoteItem, OfferRule } from "../../types/domain";
 import { ProductImage } from "./ProductImage";
@@ -97,9 +97,15 @@ export function SkuSearchModal({
     [catalog, currentItems, hasCustomer, offerRules, quantity, selected, segment],
   );
 
+  const kitPreview = useMemo(() => {
+    if (!selected || !offerGroups.some(group => group.primary.deal?.kind === "KIT")) return undefined;
+    return buildQuote([...currentItems, { sku: selected.sku, quantity }], segment, offerRules, catalog);
+  }, [catalog, currentItems, offerGroups, offerRules, quantity, segment, selected]);
+
   const applicableOfferGroups = useMemo(
     () =>
       offerGroups.filter((group) => {
+        if (group.primary.deal?.kind === "KIT") return false;
         const matchesQty = group.rules.every((offer) => ruleMatchesQuantity(offer, quantity));
         if (!matchesQty) return false;
         if (group.isKit && selected?.sku) {
@@ -268,6 +274,7 @@ export function SkuSearchModal({
     }
   }, [results, selectedSku]);
 
+  const quoteSkusKey = [...new Set(currentItems.map(item => item.sku.trim()).filter(Boolean))].sort().join("|");
   const catalogRef = useRef(catalog);
   useEffect(() => {
     catalogRef.current = catalog;
@@ -285,13 +292,13 @@ export function SkuSearchModal({
     setOfferLoading(true);
     setOfferError("");
 
-    loadOfferRulesForSkus([selected.sku], [segment]).then((loadedRules) => {
+    loadOfferRulesForSkus([...new Set([selected.sku, ...quoteSkusKey.split("|").filter(Boolean)])], [segment]).then((loadedRules) => {
       if (!active) return;
       const rules = loadedRules ?? sampleOfferRules;
       setOfferRules(rules);
 
       const knownSkus = new Set(catalogRef.current.map((p) => p.sku));
-      const companionSkus = [...new Set(rules.map((r) => r.sku))].filter((sku) => sku && !knownSkus.has(sku));
+      const companionSkus = [...new Set(rules.flatMap(r => r.deal ? dealSkus(r.deal, r.sku) : [r.sku]))].filter((sku) => sku && !knownSkus.has(sku));
       if (companionSkus.length) {
         loadProductsBySkus(companionSkus).then((companionProducts) => {
           if (active && companionProducts.length) {
@@ -311,7 +318,7 @@ export function SkuSearchModal({
     return () => {
       active = false;
     };
-  }, [hasCustomer, onCatalogProductsFound, selected?.sku, segment]);
+  }, [hasCustomer, onCatalogProductsFound, quoteSkusKey, selected?.sku, segment]);
 
   function selectSku(sku: string) {
     setSelectedSku(sku);
@@ -333,6 +340,7 @@ export function SkuSearchModal({
 
     onAddItems(items);
     setAddedMessage(
+      kitPreview ? `SKU agregado: ${cleanSku}. Los kits se calculan con las cantidades de la cotización.` :
       effectiveOffer?.isKit
         ? `SKU agregado (Completa kit ${effectiveOffer.primary.id}): ${cleanSku}`
         : effectiveOffer
@@ -521,6 +529,52 @@ export function SkuSearchModal({
                               <h4>Ofertas y promociones disponibles ({offerGroups.length})</h4>
                             </div>
                             {offerGroups.map((offerGroup) => {
+                              const deal = offerGroup.primary.deal;
+                              if (deal?.kind === "KIT") {
+                                const offer = offerGroup.primary;
+                                const applied = !kitPreview?.pricingError && kitPreview?.lines.some(line => line.allocations?.some(bucket => bucket.offers.some(rule => rule.id === offer.id && rule.promotionId === offer.promotionId && rule.segment.trim() === offer.segment.trim())));
+                                return (
+                                  <div className={applied ? "offer-row best-offer" : "offer-row"} key={offerGroup.key}>
+                                    <div className="offer-title-group">
+                                      <span className="offer-id-label">Oferta {offer.id}</span>
+                                      <strong className="offer-promo-name">{offer.promotionName}</strong>
+                                    </div>
+                                    <div className="offer-badges">
+                                      <Badge tone={applied ? "success" : "neutral"}>
+                                        {applied ? "Mejor oferta" : "Kit en combo"}
+                                      </Badge>
+                                    </div>
+                                    <div className="kit-deal-requirements">
+                                      <span className="kit-deal-subtitle">Productos requeridos en combo:</span>
+                                      <div className="kit-set-chips">
+                                        {deal.sets ? deal.sets.map((set) => (
+                                          <span className="kit-set-chip" key={set.id}>
+                                            <strong>SET {set.id}:</strong> {set.quantity} u. · SKU {set.skus.join(", ")}
+                                            {set.benefit ? (
+                                              <span className="kit-chip-benefit">
+                                                ({set.benefit.type === "PERCENT_OFF" ? `${set.benefit.value}% desc.` : `C$${set.benefit.value.toFixed(2)}`})
+                                              </span>
+                                            ) : null}
+                                          </span>
+                                        )) : deal.items ? deal.items.map((item) => (
+                                          <span className="kit-set-chip" key={item.sku}>
+                                            {item.quantity} u. · SKU {item.sku}
+                                          </span>
+                                        )) : null}
+                                      </div>
+                                    </div>
+                                    <div className="kit-deal-status">
+                                      {kitPreview?.pricingError ? (
+                                        <span className="kit-status-error">{kitPreview.pricingError}</span>
+                                      ) : applied ? (
+                                        <span className="kit-status-applied">✓ Aplica con la cantidad seleccionada</span>
+                                      ) : (
+                                        <span className="kit-status-pending">Requiere completar los productos del combo</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              }
                               const missingCompanions =
                                 offerGroup.isKit && selected?.sku
                                   ? kitMissingCompanionSkus(offerGroup, selected.sku, currentItems)
@@ -549,9 +603,9 @@ export function SkuSearchModal({
                                       : undefined
                                   }
                                 >
-                                  <div>
-                                    <strong>{offerGroup.primary.id}</strong>
-                                    <span>{offerGroup.primary.promotionName}</span>
+                                  <div className="offer-title-group">
+                                    <span className="offer-id-label">Oferta {offerGroup.primary.id}</span>
+                                    <strong className="offer-promo-name">{offerGroup.primary.promotionName}</strong>
                                   </div>
                                   <div className="offer-badges">
                                     {isBestOffer ? (
@@ -569,7 +623,7 @@ export function SkuSearchModal({
                                         : `Segmento ${offerGroup.primary.segment.trim() || segment}`}
                                     </Badge>
                                   </div>
-                                  <small>{offerGroup.primary.deal ? dealDescription(offerGroup.primary.deal) : thresholdLabel(offerGroup.rules)}</small>
+                                  <small className="offer-deal-desc">{offerGroup.primary.deal ? dealDescription(offerGroup.primary.deal) : thresholdLabel(offerGroup.rules)}</small>
                                   {offerGroup.isKit ? (
                                     <>
                                       <div className="kit-items">
@@ -655,7 +709,14 @@ export function SkuSearchModal({
 
                 {addedMessage ? <p className="added-message">{addedMessage}</p> : null}
 
-                {selectedOffer?.isKit ? (() => {
+                {kitPreview ? (
+                  <div className="selected-kit-banner">
+                    <div className="selected-kit-banner-row">
+                      <span>{kitPreview.pricingError ? kitPreview.pricingError : <>Subtotal cotización: <strong>{formatCurrency(kitPreview.subtotalFinal)}</strong></>}</span>
+                    </div>
+                    <small>Incluye productos actuales y combo completo con oferta</small>
+                  </div>
+                ) : selectedOffer?.isKit ? (() => {
                   const kitTotals = estimateKitTotals(selectedOffer, catalog, quantity);
                   return (
                     <div className="selected-kit-banner">
@@ -695,7 +756,7 @@ export function SkuSearchModal({
 
                 <Button onClick={() => addSelected(selected, selectedOffer)}>
                   <PackagePlus size={16} />
-                  {selectedOffer?.isKit
+                  {kitPreview ? "Agregar SKU" : selectedOffer?.isKit
                     ? "Agregar SKU (Completa kit)"
                     : selectedOffer
                     ? "Agregar SKU con oferta"

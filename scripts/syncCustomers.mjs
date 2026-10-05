@@ -1,26 +1,46 @@
 import { createClient } from "@supabase/supabase-js";
-import readXlsxFile from "read-excel-file/node";
+import fs from "fs";
+import * as XLSX from "xlsx";
 
-const DEFAULT_FILE = "C:/Users/arlen.aguilar/Downloads/Clientes Estadisticas de Compras sep26.xlsx";
+const DEFAULT_FILE = "documentos/Nueva_Estructura_Data_Cliente.xlsb";
 const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
 const filePath = args.find((arg) => arg !== "--dry-run") || DEFAULT_FILE;
 const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY;
 
-const workbookData = await readXlsxFile(filePath);
-const rows = normalizeWorkbookRows(workbookData);
-const headerIndex = rows.findIndex((row) => normalize(row[1]) === "cust_id" && normalize(row[15]) === "segmento");
-
-if (headerIndex < 0) {
-  console.error("No se encontro el encabezado esperado con cust_id en columna B y segmento en columna P.");
+if (!fs.existsSync(filePath)) {
+  console.error(`No existe el archivo especificado: ${filePath}`);
   process.exit(1);
 }
 
+const fileBuffer = fs.readFileSync(filePath);
+const workbook = XLSX.read(fileBuffer, { type: "buffer" });
+const firstSheetName = workbook.SheetNames[0];
+const worksheet = workbook.Sheets[firstSheetName];
+const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
+
+if (!rawRows.length) {
+  console.error("El archivo está vacío.");
+  process.exit(1);
+}
+
+const headerIndex = rawRows.findIndex((row) => {
+  const norm = row.map(normalize);
+  return norm.includes("cust_id") || norm.includes("customer_id") || norm.includes("id cliente");
+});
+
+if (headerIndex < 0) {
+  console.error("No se encontró el encabezado esperado con cust_id / customer_id / id cliente.");
+  process.exit(1);
+}
+
+const headers = rawRows[headerIndex].map(normalize);
+const bodyRows = rawRows.slice(headerIndex + 1);
+
 const customers = deduplicateCustomers(
-  rows
-    .slice(headerIndex + 1)
-    .map(rowToCustomer)
+  bodyRows
+    .map((row) => rowToCustomer(row, headers))
     .filter((customer) => customer.customer_id && customer.display_name),
 );
 
@@ -29,7 +49,7 @@ if (!customers.length) {
   process.exit(1);
 }
 
-console.log(`Clientes validos: ${customers.length}`);
+console.log(`Clientes validos procesados: ${customers.length}`);
 if (dryRun) {
   console.log("Modo dry-run: no se modifico Supabase.");
   console.log(JSON.stringify(customers.slice(0, 3), null, 2));
@@ -49,24 +69,32 @@ await deleteExistingCustomers();
 await insertCustomers(customers);
 console.log("Sincronizacion de clientes completada.");
 
-function normalizeWorkbookRows(data) {
-  if (Array.isArray(data) && data.length === 1 && data[0]?.data) return data[0].data;
-  if (Array.isArray(data) && data[0]?.sheet && data[0]?.data) {
-    const firstSheet = data.find((sheet) => Array.isArray(sheet.data) && sheet.data.length) || data[0];
-    return firstSheet.data;
+function pickValue(row, headers, aliases) {
+  for (const alias of aliases) {
+    const idx = headers.indexOf(normalize(alias));
+    if (idx >= 0 && row[idx] !== undefined && row[idx] !== "") {
+      return row[idx];
+    }
   }
-  return data;
+  return undefined;
 }
 
-function rowToCustomer(row) {
-  const customerId = clean(row[1]);
-  const firstName = clean(row[3]);
-  const lastName = clean(row[4]);
-  const orgName = clean(row[5]);
-  const mobile = cleanPhone(row[6]);
-  const nationalId = cleanNationalId(row[8]);
-  const address = clean(row[13]);
-  const segment = clean(row[15]);
+function rowToCustomer(row, headers) {
+  const customerId = clean(pickValue(row, headers, ["cust_id", "customer_id", "id cliente"]) ?? row[0]);
+
+  const fn1 = clean(pickValue(row, headers, ["first_name", "primer nombre", "nombre"]) ?? row[2]);
+  const fn2 = clean(pickValue(row, headers, ["first_name2", "segundo nombre"]) ?? row[3]);
+  const ln1 = clean(pickValue(row, headers, ["last_name", "primer apellido", "apellido"]) ?? row[4]);
+  const ln2 = clean(pickValue(row, headers, ["last_name2", "segundo apellido"]) ?? row[5]);
+
+  const firstName = [fn1, fn2].filter(Boolean).join(" ").trim();
+  const lastName = [ln1, ln2].filter(Boolean).join(" ").trim();
+  const orgName = clean(pickValue(row, headers, ["org_name", "organizacion", "empresa"]));
+  const email = cleanEmail(pickValue(row, headers, ["email_addr", "email", "correo", "correo electronico", "mail"]) ?? row[7]);
+  const mobile = cleanPhone(pickValue(row, headers, ["mobile", "celular", "telefono"]));
+  const nationalId = cleanNationalId(pickValue(row, headers, ["alt_cust_id", "customer_num", "cedula", "id", "identificacion id"]) ?? row[19]);
+  const address = clean(pickValue(row, headers, ["address1", "municipo", "municipio", "direccion", "address"]) ?? row[9]);
+  const segment = normalizeSegment(pickValue(row, headers, ["segmento", "id de segmento", "segment_id", "segment"]) ?? row[20]);
   const displayName = orgName || [firstName, lastName].filter(Boolean).join(" ").trim() || customerId;
 
   return {
@@ -75,6 +103,7 @@ function rowToCustomer(row) {
     last_name: lastName,
     org_name: orgName || null,
     display_name: displayName,
+    email: email || null,
     mobile: mobile || null,
     national_id: nationalId || null,
     segment,
@@ -121,7 +150,14 @@ async function insertCustomers(customers) {
 }
 
 function clean(value) {
-  return String(value ?? "").trim().replace(/\s+/g, " ");
+  const str = String(value ?? "").trim().replace(/\s+/g, " ");
+  if (!str || str.toUpperCase() === "NULL") return "";
+  return str;
+}
+
+function cleanEmail(value) {
+  const mail = clean(value).toLowerCase();
+  return mail.includes("@") ? mail : "";
 }
 
 function cleanPhone(value) {
@@ -133,6 +169,13 @@ function cleanNationalId(value) {
   const raw = clean(value);
   if (!raw || raw === "0") return "";
   return raw.includes("|") ? raw.split("|").pop().trim() : raw;
+}
+
+function normalizeSegment(value) {
+  const raw = clean(value);
+  if (!raw || raw === "-") return " - ";
+  const match = raw.match(/comasa\s+(\d+)/i) ?? raw.match(/\b(1001|1002|1003|1102|1103|1104|1105)\b/);
+  return match ? match[1] : raw;
 }
 
 function normalize(value) {

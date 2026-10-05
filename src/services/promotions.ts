@@ -1,5 +1,5 @@
 import type { ImportedPromotionRow, OfferRule, Product, Promotion } from "../types/domain";
-import { dealSkus } from "./dealConfig";
+import { dealSkus, isPendingKit } from "./dealConfig";
 
 export type AvailableOfferGroup = {
   key: string;
@@ -172,6 +172,7 @@ export function ruleMatchesQuantity(rule: OfferRule, quantity: number) {
   if (rule.deal?.kind === "BUY_GET") return quantity >= rule.deal.buyQuantity;
   const thresholdQuantity = minimumQuantityForRule(rule);
   const thresholdType = effectiveThresholdType(rule);
+  if (rule.repeatExact && thresholdType === "EXACT") return quantity >= thresholdQuantity;
   return thresholdType === "MINIMUM" ? quantity >= thresholdQuantity : quantity === thresholdQuantity;
 }
 
@@ -192,15 +193,11 @@ export function availableOfferGroups(rules: OfferRule[], sku: string, segment: s
   const cleanSku = sku.trim();
 
   rulesForSkuSegment(rules, cleanSku, segment).forEach((rule) => {
+    if (isPendingKit(rule)) return;
     const kitRules = rule.type === "KIT_OFFER" ? getKitRules(rules, rule, segment) : [rule];
     const uniqueSkuCount = new Set(kitRules.map((kitRule) => kitRule.sku.trim())).size;
 
     const key = rule.type === "KIT_OFFER" ? kitGroupKey(rule) : `${rule.promotionId.trim()}|${rule.id.trim()}|${rule.sku.trim()}|${rule.segment.trim()}|${rule.minQuantity ?? 0}`;
-    if (rule.type === "KIT_OFFER") {
-      if (uniqueSkuCount < 2) return;
-      const hasConfiguredThreshold = kitRules.some(r => typeof r.thresholdQuantity === "number" && r.thresholdQuantity > 0 && !!r.thresholdType);
-      if (!rule.deal && uniqueSkuCount >= 4 && !hasConfiguredThreshold) return;
-    }
     if (!groups.has(key)) {
       groups.set(key, {
         key,
@@ -271,7 +268,7 @@ export function estimateLineTotal(listPrice: number, quantity: number, rule?: Of
 
 export function estimateUnitPrice(listPrice: number, rule?: OfferRule) {
   if (!rule) return listPrice;
-  if (rule.deal?.kind === "UNIT" && rule.fixedPrice !== undefined && !rule.discountType) return validPrice(rule.fixedPrice) ? rule.fixedPrice : listPrice;
+  if ((rule.deal?.kind === "UNIT" || rule.repeatExact) && rule.fixedPrice !== undefined && !rule.discountType) return validPrice(rule.fixedPrice) ? rule.fixedPrice : listPrice;
 
   // RMS describes the benefit separately from the offer's quantity conditions.
   const discountType = rule.discountType?.trim().toUpperCase();
@@ -323,6 +320,7 @@ export function ruleAppliesToSegment(rule: Pick<OfferRule, "segment">, segment: 
 }
 
 function effectiveThresholdType(rule: OfferRule) {
+  if (rule.repeatExact) return rule.thresholdType ?? "EXACT";
   if (rule.type === "LINE_ITEM_DISCOUNT" || rule.type === "FIXED_QTY_PRICE" || rule.type === "TIERED_DISCOUNT") {
     return "MINIMUM";
   }
@@ -331,6 +329,7 @@ function effectiveThresholdType(rule: OfferRule) {
 }
 
 function effectiveThresholdQuantity(rule: OfferRule) {
+  if (rule.repeatExact) return rule.thresholdQuantity ?? 1;
   // Zero explicitly means no minimum for these offers, including fractional units.
   if ((rule.type === "LINE_ITEM_DISCOUNT" || rule.type === "FIXED_QTY_PRICE") && rule.thresholdQuantity === 0) {
     return 0;

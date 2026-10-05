@@ -4,12 +4,17 @@ import { validateDealConfig } from "../../services/dealConfig";
 import { saveOfferDeal, type OfferConfigurationRow } from "../../services/supabase";
 import type { DealBenefit, DealConfig } from "../../types/domain";
 import "./deal-editor.css";
+import { KitSetFields } from "./KitSetFields";
 
 const splitSkus = (value: string) => [...new Set(value.split(/[\s,;]+/).map(sku => sku.trim()).filter(Boolean))];
 const defaultBenefit: DealBenefit = { type: "PERCENT_OFF", value: 100 };
 
 export function DealEditor({ row, onClose, onSaved }: { row: OfferConfigurationRow; onClose: () => void; onSaved: () => void }) {
-  const [config, setConfig] = useState<DealConfig>(row.deal ?? { kind: "UNIT" });
+  const [config, setConfig] = useState<DealConfig>(() => {
+    if (row.deal?.kind === "KIT" && !row.deal.sets) return { kind: "KIT", sets: row.deal.items.map((item, i) => ({ id: String(i + 1), skus: [item.sku], quantity: item.quantity, thresholdType: "EXACT", benefit: item.benefit })) };
+    if (row.type === "KIT_OFFER" && row.deal?.kind !== "KIT") return { kind: "KIT", sets: [] };
+    return row.deal ?? (row.type === "KIT_OFFER" ? { kind: "KIT", sets: [] } : { kind: "UNIT" });
+  });
   const [skuText, setSkuText] = useState(row.deal?.kind === "MIX_MATCH" ? row.deal.skus.join(", ") : row.deal?.kind === "BUY_GET" ? row.deal.buySkus.join(", ") : row.sku);
   const [rewardText, setRewardText] = useState(row.deal?.kind === "BUY_GET" ? row.deal.getSkus.join(", ") : row.sku);
   const [error, setError] = useState("");
@@ -20,7 +25,7 @@ export function DealEditor({ row, onClose, onSaved }: { row: OfferConfigurationR
     switch (kind) {
       case "UNIT": setConfig({ kind }); break;
       case "PACK": setConfig({ kind, quantity: 8, price: row.fixedPrice ?? 1000 }); break;
-      case "KIT": setConfig({ kind, items: [{ sku: row.sku, quantity: 1, benefit: { type: "PERCENT_OFF", value: row.discountPercent ?? 0 } }, { sku: "", quantity: 1, benefit: defaultBenefit }] }); break;
+      case "KIT": setConfig({ kind, sets: [] }); break;
       case "MIX_MATCH": setConfig({ kind, skus: [row.sku], quantity: 3, benefit: { type: "PERCENT_OFF", value: 10 } }); break;
       case "BUY_GET": setConfig({ kind, buySkus: [row.sku], buyQuantity: 3, getSkus: [row.sku], getQuantity: 1, benefit: defaultBenefit, discountTriggers: true }); break;
     }
@@ -43,9 +48,9 @@ export function DealEditor({ row, onClose, onSaved }: { row: OfferConfigurationR
       <header><h2 id="deal-editor-title">Regla de oferta {row.offerId}</h2><Button variant="ghost" onClick={onClose} disabled={saving}>Cerrar</Button></header>
       <p>{row.promotionName} · Segmento {row.segment.trim() === "-" ? "general" : row.segment}</p>
       <p>La regla se aplica a esta oferta y segmento. Las unidades consumidas no califican en otro paquete.</p>
-      <label>Modalidad<select value={config.kind} onChange={e => changeKind(e.target.value as DealConfig["kind"])}>
+      <label>Modalidad<select disabled={row.type === "KIT_OFFER"} value={config.kind} onChange={e => changeKind(e.target.value as DealConfig["kind"])}>
         <option value="UNIT">Precio o descuento unitario importado</option><option value="PACK">Paquete de un SKU a precio total</option>
-        <option value="KIT">Kit completo con proporciones por SKU</option><option value="MIX_MATCH">Cantidad de unidades mezcladas de una lista</option>
+        <option value="KIT">Kit por SET</option><option value="MIX_MATCH">Cantidad de unidades mezcladas de una lista</option>
         <option value="BUY_GET">Compra X y recibe beneficio en Y</option>
       </select></label>
       {config.kind === "UNIT" ? <p>Utiliza el beneficio importado. Las escalas compiten por su precio y mínimo de unidades.</p> : null}
@@ -65,16 +70,20 @@ export function DealEditor({ row, onClose, onSaved }: { row: OfferConfigurationR
         <label className="deal-checkbox"><input type="checkbox" checked={config.discountTriggers} onChange={e => setConfig({ ...config, discountTriggers: e.target.checked })} />Permitir descuento en X cuando ambas ofertas permiten combinar</label>
         <p>La recompensa debe estar en la cotización. X e Y consumen unidades diferentes aunque sus listas compartan códigos. Se selecciona la combinación de mayor ahorro.</p>
       </> : null}
-      {config.kind === "KIT" ? <>
-        {config.items.map((item, i) => <fieldset key={i}><legend>Componente {i + 1}</legend>
-          <label>SKU<input value={item.sku} onChange={e => setConfig({ ...config, items: config.items.map((part, n) => n === i ? { ...part, sku: e.target.value.trim() } : part) })} /></label>
-          <NumberField label="Unidades requeridas" value={item.quantity} onChange={quantity => setConfig({ ...config, items: config.items.map((part, n) => n === i ? { ...part, quantity } : part) })} />
-          <BenefitField value={item.benefit} onChange={benefit => setConfig({ ...config, items: config.items.map((part, n) => n === i ? { ...part, benefit } : part) })} />
-          <Button variant="ghost" onClick={() => setConfig({ ...config, items: config.items.filter((_, n) => n !== i) })}>Quitar componente</Button>
-        </fieldset>)}
-        <Button variant="outline" onClick={() => setConfig({ ...config, items: [...config.items, { sku: "", quantity: 1, benefit: defaultBenefit }] })}>Agregar componente</Button>
+      {config.kind === "KIT" && config.sets ? <>
+        <p>Todos los SET deben cumplirse. Un SKU puede pertenecer a varios SET, pero cada unidad se usa una sola vez. Las cantidades exactas dejan sobrantes; las mínimas permiten beneficiar cantidades mayores.</p>
+        {!config.sets.length ? <p>Pendiente de configuración: agregue los SET para habilitar este kit.</p> : null}
+        {row.deal?.kind === "KIT" && !row.deal.sets ? <p>Revise esta propuesta basada en la regla anterior. El kit seguirá pendiente hasta guardar sus SET.</p> : null}
+        {config.sets.map((set, i) => <KitSetFields key={set.id} value={set} onChange={next => setConfig({ ...config, sets: config.sets!.map((part, n) => n === i ? next : part) })} onRemove={() => setConfig({ ...config, sets: config.sets!.filter((_, n) => n !== i) })} />)}
+        <Button variant="outline" onClick={() => {
+          const ids = new Set(config.sets!.map(set => set.id));
+          let id = 1;
+          while (ids.has(String(id))) id++;
+          setConfig({ ...config, sets: [...config.sets!, { id: String(id), skus: [], quantity: 1, thresholdType: "EXACT" }] });
+        }}>Agregar SET</Button>
+        <p>La opción Combina se controla para toda la oferta desde la tabla de configuración.</p>
       </> : null}
-      <p>{row.allowStacking ? "Combinable: admite porcentajes adicionales de otras ofertas combinables." : "Excluyente: compite contra las otras ofertas por el menor total."}</p>
+      <p>{row.allowStacking ? "Combinable: admite beneficios compatibles de otras ofertas combinables." : "Excluyente: compite contra las otras ofertas por el menor total."}</p>
       {error ? <p role="alert" className="deal-error">{error}</p> : null}
       <footer><Button onClick={save} disabled={saving}>{saving ? "Guardando…" : "Guardar regla"}</Button></footer>
     </section>

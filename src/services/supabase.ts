@@ -23,6 +23,8 @@ import { readDealSettings, writeDealSetting, dealSettingKey } from "./dealSettin
 import { allocationLabel } from "./dealEngine";
 import { readPromotionPages } from "./readPromotionPages";
 import type { DealConfig } from "../types/domain";
+import { applyOfferDetails } from "./offerConfiguration";
+import { readOfferDetails, submitOfferDetails } from "./offerConfigurationStore";
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabasePublishableKey =
@@ -89,6 +91,7 @@ type PromotionRuleRow = {
   fixed_price: number | null;
   discount_percent: number | null;
   discount_type: string | null;
+  promotion_attribute: string | null;
   configuration_note: string | null;
   allow_stacking: boolean | null;
   threshold_quantity: number | null;
@@ -108,6 +111,7 @@ type CustomerRow = {
   last_name: string | null;
   org_name: string | null;
   display_name: string | null;
+  email: string | null;
   mobile: string | null;
   national_id: string | null;
   segment: string | null;
@@ -158,9 +162,11 @@ export type OfferConfigurationFilters = {
   promotionId?: string;
   offerId?: string;
   sku?: string;
+  limit?: number;
 };
 
 export type OfferConfigurationRow = {
+  globalDetails?: boolean;
   deal?: DealConfig;
   ruleId: string;
   promotionId: string;
@@ -183,6 +189,66 @@ export type OfferConfigurationRow = {
 type OfferConfigurationResult =
   | { ok: true; rows: OfferConfigurationRow[] }
   | { ok: false; message: string };
+
+export type OfferConfigurationMetrics = { offers: number; offerSkus: number; combinable: number };
+
+export async function loadOfferConfigurationMetrics(signal?: AbortSignal): Promise<OfferConfigurationMetrics> {
+  const offers = new Set<string>();
+  const offerSkus = new Set<string>();
+  const combinable = new Set<string>();
+  const add = (offer: string, sku: string, stacking: boolean) => {
+    offers.add(offer);
+    offerSkus.add(JSON.stringify([offer, sku.trim()]));
+    if (stacking) combinable.add(offer);
+  };
+  if (!supabase) {
+    sampleOfferRules.forEach(row => add(row.id, row.sku, Boolean(row.allowStacking)));
+  } else {
+    // Check if high-performance RPC is available on live Supabase
+    const isMockClient = (supabase as unknown as { supabaseUrl?: string }).supabaseUrl === "https://test.supabase.co";
+    if (!isMockClient) {
+      try {
+        const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000);
+        const { data, error } = await supabase.rpc("get_offer_configuration_metrics").abortSignal(requestSignal);
+        if (!error && data && typeof data.offers === "number") {
+          return {
+            offers: data.offers,
+            offerSkus: data.offerSkus,
+            combinable: data.combinable,
+          };
+        }
+      } catch {
+        // Fall back to cursor pagination
+      }
+    }
+
+    let afterId: string | undefined;
+    for (;;) {
+      signal?.throwIfAborted();
+      // Continue from the last primary key: no full COUNT or growing OFFSET per page.
+      let query = supabase.from("offer_rules")
+        .select("id,external_offer_id,sku,allow_stacking")
+        .eq("is_active", true).order("id").limit(1000);
+      if (afterId) query = query.gt("id", afterId);
+      const requestSignal = AbortSignal.any([
+        ...(signal ? [signal] : []), AbortSignal.timeout(30000),
+      ]);
+      const { data, error } = await query.abortSignal(requestSignal);
+      if (error) {
+        if (requestSignal.aborted && !signal?.aborted) {
+          throw new Error("La consulta de totales no respondió en 30 segundos. Vuelva a abrir Config. ofertas para reintentar.");
+        }
+        throw new Error(`No se pudieron actualizar los totales de ofertas: ${error.message}`);
+      }
+      if (!data?.length) break;
+      data.forEach(row => {
+        if (row.external_offer_id && row.sku) add(row.external_offer_id, row.sku, Boolean(row.allow_stacking));
+      });
+      afterId = data[data.length - 1].id;
+    }
+  }
+  return { offers: offers.size, offerSkus: offerSkus.size, combinable: combinable.size };
+}
 
 export type IssuedQuote = {
   id: string;
@@ -432,7 +498,7 @@ export async function searchCustomers(term: string, limit = 30): Promise<Custome
 
   let request = supabase
     .from("customers")
-    .select("customer_id,first_name,last_name,org_name,display_name,mobile,national_id,segment,address")
+    .select("customer_id,first_name,last_name,org_name,display_name,email,mobile,national_id,segment,address")
     .order("display_name", { ascending: true })
     .limit(limit);
 
@@ -442,6 +508,7 @@ export async function searchCustomers(term: string, limit = 30): Promise<Custome
       [
         `display_name.ilike.${pattern}`,
         `customer_id.ilike.${pattern}`,
+        `email.ilike.${pattern}`,
         `mobile.ilike.${pattern}`,
         `national_id.ilike.${pattern}`,
       ].join(","),
@@ -650,35 +717,43 @@ export async function syncCustomersToSupabase(
     return { ok: false, message: "No hay clientes validos para sincronizar." };
   }
 
-  onProgress?.(0, validCustomers.length, "Eliminando clientes anteriores");
-  const deleted = await supabase
-    .from("customers")
-    .delete()
-    .not("customer_id", "is", null);
+  onProgress?.(0, validCustomers.length, "Limpiando clientes anteriores");
+  const prepared = await prepareCustomerSync();
+  if (!prepared.ok) return prepared;
 
-  if (deleted.error) return { ok: false, message: deleted.error.message };
-
-  const chunkSize = 750;
-  for (let index = 0; index < validCustomers.length; index += chunkSize) {
-    const chunk = validCustomers.slice(index, index + chunkSize).map(customerPayload);
-    const inserted = await supabase.from("customers").insert(chunk);
-    if (inserted.error) return { ok: false, message: inserted.error.message };
-    onProgress?.(
-      Math.min(index + chunk.length, validCustomers.length),
-      validCustomers.length,
-      "Cargando clientes vigentes",
-    );
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
+  const uploaded = await uploadInChunks(validCustomers, 500, onProgress, "Cargando clientes vigentes", async (chunk) =>
+    supabase.from("customers").insert(chunk.map(customerPayload)),
+  );
+  if (!uploaded.ok) return uploaded;
 
   const duplicates = customers.filter((customer) => customer.customerId && customer.displayName).length - validCustomers.length;
   return {
     ok: true,
     message:
-      `Sincronizacion de clientes completada: ${validCustomers.length} clientes publicados.` +
+      `Sincronización de clientes completada: ${validCustomers.length} clientes publicados.` +
       (duplicates ? ` ${duplicates} duplicados consolidados.` : ""),
   };
 }
+
+async function prepareCustomerSync() {
+  if (!supabase) {
+    return { ok: false, message: "Supabase no esta configurado en este entorno." };
+  }
+
+  const prepared = await supabase.rpc("prepare_customer_sync");
+  if (!prepared.error) return { ok: true, message: "Clientes anteriores limpiados." };
+
+  if (isMissingRpcFunctionError(prepared.error)) {
+    return {
+      ok: false,
+      message:
+        "Falta ejecutar la funcion prepare_customer_sync en Supabase. Ejecute supabase/customer_sync.sql en el SQL Editor de Supabase y vuelva a intentar la carga de clientes.",
+    };
+  }
+
+  return { ok: false, message: prepared.error.message };
+}
+
 
 export async function syncProductsToSupabase(
   products: Product[],
@@ -862,7 +937,9 @@ export async function loadOfferRulesForSkus(skus: string[], segments: string[]) 
   const configuredOfferIds = settings.filter(setting => ruleSegments.some(segment => segment.trim() === setting.segment.trim()) && dealSkus(setting.config, "").some(sku => cleanSkus.includes(sku))).map(setting => setting.offer_id);
   const kitRows = await fetchKitCompanionRows(baseRows, ruleSegments, promotionIds, configuredOfferIds);
   const configMap = new Map(settings.map(setting => [dealSettingKey(setting.promotion_id, setting.offer_id, setting.segment), setting.config]));
-  return mapOfferRules([...baseRows, ...kitRows], promotionMap).map(rule => ({ ...rule, deal: configMap.get(dealSettingKey(rule.promotionId, rule.id, rule.segment)) }));
+  const rules = mapOfferRules([...baseRows, ...kitRows], promotionMap).map(rule => ({ ...rule, deal: configMap.get(dealSettingKey(rule.promotionId, rule.id, rule.segment)) }));
+  const details = await readOfferDetails(supabase, rules.map(rule => rule.id));
+  return details === null ? rules : applyOfferDetails(rules, details);
 }
 
 export async function saveOfferDeal(row: OfferConfigurationRow, config: DealConfig) {
@@ -872,18 +949,19 @@ export async function saveOfferDeal(row: OfferConfigurationRow, config: DealConf
 
 export async function searchOfferConfigurations(
   filters: OfferConfigurationFilters,
-  limit = 120,
 ): Promise<OfferConfigurationResult> {
   const promotionQuery = filters.promotionId?.trim();
   const offerQuery = filters.offerId?.trim();
   const skuQuery = filters.sku?.trim();
+  const limit = filters.limit && filters.limit > 0 ? filters.limit : undefined;
 
   if (!supabase) {
+    const matched = sampleOfferRules
+      .filter((rule) => matchesConfigFilter(rule.promotionId, promotionQuery) && matchesConfigFilter(rule.id, offerQuery) && (!skuQuery || rule.sku === skuQuery));
+    const finalSample = limit ? matched.slice(0, limit) : matched;
     return {
       ok: true,
-      rows: sampleOfferRules
-        .filter((rule) => matchesConfigFilter(rule.promotionId, promotionQuery) && matchesConfigFilter(rule.id, offerQuery) && (!skuQuery || rule.sku === skuQuery))
-        .slice(0, limit)
+      rows: finalSample
         .map((rule) => ({
           ruleId: `${rule.promotionId}-${rule.id}-${rule.sku}-${rule.segment}`,
           promotionId: rule.promotionId,
@@ -903,31 +981,47 @@ export async function searchOfferConfigurations(
     };
   }
 
-  let request = supabase
-    .from("offer_rules")
-    .select("id,external_offer_id,promotion_id,offer_type,sku,segment,min_quantity,fixed_price,discount_percent,discount_type,configuration_note,allow_stacking,threshold_quantity,threshold_type")
-    .eq("is_active", true)
-    .order("promotion_id", { ascending: true })
-    .limit(limit);
+  const client = supabase;
+  let rows: PromotionRuleRow[];
+  try {
+    let total: number | null = null;
+    rows = await readPromotionPages(async (from, to) => {
+      if (total !== null && from >= total) return { data: [], error: null };
+      if (limit !== undefined && from >= limit) return { data: [], error: null };
+      const rangeTo = limit !== undefined ? Math.min(to, limit - 1) : to;
+      let request = client
+        .from("offer_rules")
+        .select("id,external_offer_id,promotion_id,offer_type,sku,segment,min_quantity,fixed_price,discount_percent,discount_type,promotion_attribute,configuration_note,allow_stacking,threshold_quantity,threshold_type", { count: "exact" })
+        .eq("is_active", true)
+        .order("promotion_id", { ascending: true })
+        .order("id", { ascending: true });
 
-  if (promotionQuery) request = request.ilike("promotion_id", `%${escapePostgrestPattern(promotionQuery)}%`);
-  if (offerQuery) request = request.ilike("external_offer_id", `%${escapePostgrestPattern(offerQuery)}%`);
-  if (skuQuery) request = request.eq("sku", skuQuery);
+      if (promotionQuery) request = request.ilike("promotion_id", `%${escapePostgrestPattern(promotionQuery)}%`);
+      if (offerQuery) request = request.ilike("external_offer_id", `%${escapePostgrestPattern(offerQuery)}%`);
+      if (skuQuery) request = request.eq("sku", skuQuery);
 
-  const { data, error } = await request;
-  if (error || !data) {
-    return {
-      ok: false,
-      message: error?.message ?? "No se pudieron cargar las configuraciones de ofertas.",
-    };
+      const result = await request.range(from, rangeTo).abortSignal(AbortSignal.timeout(30000));
+      total = result.count ?? null;
+      return result;
+    }) as PromotionRuleRow[];
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "No se pudieron cargar las configuraciones de ofertas." };
   }
 
-  const rows = data as PromotionRuleRow[];
-  const promotionMap = await loadPromotionMapByIds(unique(rows.map((row) => row.promotion_id).filter(Boolean) as string[]));
   try {
+    const promotionMap = await loadPromotionMapByIds(unique(rows.map((row) => row.promotion_id).filter(Boolean) as string[]));
     const settings = await readDealSettings(supabase, [...promotionMap.keys()]);
     const configs = new Map(settings.map(setting => [dealSettingKey(setting.promotion_id, setting.offer_id, setting.segment), setting.config]));
-    return { ok: true, rows: mapOfferConfigurationRows(rows, promotionMap).map(row => ({ ...row, deal: configs.get(dealSettingKey(row.promotionId, row.offerId, row.segment)) })) };
+    const details = await readOfferDetails(supabase, rows.map(row => row.external_offer_id!).filter(Boolean));
+    const companions = await fetchKitCompanionRows(rows, unique(rows.map(row => row.segment ?? " - ")), [...promotionMap.keys()]);
+    const allRules = mapOfferRules([...rows, ...companions], promotionMap).map(rule => ({ ...rule, deal: configs.get(dealSettingKey(rule.promotionId, rule.id, rule.segment)) }));
+    const resolved = new Map((details === null ? allRules : applyOfferDetails(allRules, details)).map(rule => [rule.ruleId, rule]));
+    return { ok: true, rows: mapOfferConfigurationRows(rows, promotionMap).map(row => {
+      const rule = resolved.get(row.ruleId);
+      return { ...row, globalDetails: details !== null, deal: rule?.deal,
+        thresholdQuantity: rule?.thresholdQuantity ?? row.thresholdQuantity,
+        thresholdType: rule?.thresholdType ?? row.thresholdType };
+    }) };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "No se pudieron cargar las reglas." };
   }
@@ -966,6 +1060,15 @@ export async function updateOfferCombinationSetting(row: OfferConfigurationRow, 
 export async function updateOfferSkuThresholdSetting(row: OfferConfigurationRow) {
   if (!supabase) {
     return { ok: false, message: "Supabase no esta configurado en este entorno." };
+  }
+
+  if (row.globalDetails) {
+    try {
+      const details = [{ offer_id: row.offerId, sku: row.sku, set_id: "", quantity: row.thresholdQuantity, threshold_type: row.thresholdType }];
+      const preview = await submitOfferDetails(supabase, details);
+      await submitOfferDetails(supabase, details, preview.revision);
+      return { ok: true, message: "Condición por oferta–SKU actualizada en todas sus promociones y segmentos." };
+    } catch (error) { return { ok: false, message: error instanceof Error ? error.message : "No se pudo guardar." }; }
   }
 
   const updatedAt = new Date().toISOString();
@@ -1031,14 +1134,10 @@ async function uploadPromotionRowsInBatches(
       discount_percent: row.discountPercent ?? null,
       discount_type: row.discountType,
       segment: row.segment,
+      promotion_attribute: row.attribute ?? null,
     }));
 
-    const response =
-      writeMode === "insert"
-        ? await supabase.from("promotion_import_rows").insert(chunk)
-        : await supabase.from("promotion_import_rows").upsert(chunk, {
-            onConflict: "offer_id,promotion_id,sku,segment,min_quantity",
-          });
+    const response = await supabase.from("promotion_import_rows").insert(chunk);
 
     if (response.error) return { ok: false, message: response.error.message };
     onProgress?.(Math.min(index + chunkSize, validRows.length), validRows.length, "Enviando reglas vigentes");
@@ -1051,11 +1150,12 @@ async function uploadPromotionRowsInBatches(
 }
 
 function deduplicatePromotionRows(rows: ImportedPromotionRow[]) {
-  const grouped = new Map<string, ImportedPromotionRow>();
+  const firstAttributeByGroup = new Map<string, string>();
+  const validRows: ImportedPromotionRow[] = [];
 
   rows.forEach((row) => {
     const minQuantity = row.quantity ?? 0;
-    const key = [
+    const groupKey = [
       row.offerId.trim(),
       row.promotionId.trim(),
       row.sku.trim(),
@@ -1063,12 +1163,23 @@ function deduplicatePromotionRows(rows: ImportedPromotionRow[]) {
       minQuantity,
     ].join("|");
 
-    if (!grouped.has(key)) {
-      grouped.set(key, { ...row, quantity: minQuantity });
+    const currentAttr = (row.attribute ?? "").trim();
+
+    if (!firstAttributeByGroup.has(groupKey)) {
+      // Primera aparición de la oferta-sku: registrar atributo y conservar fila
+      firstAttributeByGroup.set(groupKey, currentAttr);
+      validRows.push({ ...row, quantity: minQuantity });
+    } else {
+      const firstAttr = firstAttributeByGroup.get(groupKey)!;
+      // Si el atributo es el mismo, se permite cargar
+      if (currentAttr === firstAttr) {
+        validRows.push({ ...row, quantity: minQuantity });
+      }
+      // Si el atributo es distinto, se omite (solo se conserva la primera aparición)
     }
   });
 
-  return [...grouped.values()];
+  return validRows;
 }
 
 function promotionPayloadsFromRows(rows: ImportedPromotionRow[]) {
@@ -1177,6 +1288,7 @@ function mapOfferRules(rows: PromotionRuleRow[], promotions: Map<string, Promoti
       fixedPrice: optionalNumber(row.fixed_price),
       discountPercent: optionalNumber(row.discount_percent),
       discountType: row.discount_type ?? undefined,
+      promotionAttribute: row.promotion_attribute ?? undefined,
       thresholdQuantity: optionalThresholdQuantity(row.threshold_quantity),
       thresholdType: optionalThresholdType(row.threshold_type),
       allowStacking: row.allow_stacking ?? false,
@@ -1233,6 +1345,7 @@ function mapCustomer(row: CustomerRow): Customer {
     lastName: row.last_name ?? "",
     orgName: row.org_name ?? undefined,
     displayName: row.display_name || row.org_name || [row.first_name, row.last_name].filter(Boolean).join(" "),
+    email: row.email ?? undefined,
     mobile: row.mobile ?? undefined,
     nationalId: row.national_id ?? undefined,
     segment: row.segment ?? "",
@@ -1350,6 +1463,7 @@ function customerPayload(customer: Customer) {
     last_name: customer.lastName,
     org_name: customer.orgName ?? null,
     display_name: customer.displayName,
+    email: customer.email ?? null,
     mobile: customer.mobile ?? null,
     national_id: customer.nationalId ?? null,
     segment: customer.segment,
@@ -1454,7 +1568,7 @@ function filterSampleCustomers(term: string, limit: number) {
   return sampleCustomers
     .filter((customer) => {
       if (!query) return true;
-      return [customer.customerId, customer.displayName, customer.mobile, customer.nationalId]
+      return [customer.customerId, customer.displayName, customer.email, customer.mobile, customer.nationalId]
         .filter(Boolean)
         .some((value) => value!.toLowerCase().includes(query));
     })
@@ -1657,12 +1771,25 @@ function detailFromCount(count: number | null, label: string) {
 }
 
 function deduplicateRules(rules: OfferRule[]) {
-  const grouped = new Map<string, OfferRule>();
+  const firstAttributeByGroup = new Map<string, string>();
+  const result: OfferRule[] = [];
+
   rules.forEach((rule) => {
-    const key = [rule.promotionId, rule.id, rule.sku, rule.segment, rule.minQuantity ?? 0].join("|");
-    if (!grouped.has(key)) grouped.set(key, rule);
+    const groupKey = [rule.promotionId, rule.id, rule.sku, rule.segment, rule.minQuantity ?? 0].join("|");
+    const currentAttr = (rule.promotionAttribute ?? "").trim();
+
+    if (!firstAttributeByGroup.has(groupKey)) {
+      firstAttributeByGroup.set(groupKey, currentAttr);
+      result.push(rule);
+    } else {
+      const firstAttr = firstAttributeByGroup.get(groupKey)!;
+      if (currentAttr === firstAttr) {
+        result.push(rule);
+      }
+    }
   });
-  return [...grouped.values()];
+
+  return result;
 }
 
 function unique<T>(values: T[]) {

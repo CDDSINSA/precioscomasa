@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import { createClient } from "@supabase/supabase-js";
 
 // Compile the actual application modules without a browser or a database session.
 function loadModule(path, dependencies = {}, globals = {}) {
@@ -23,8 +24,172 @@ function loadModule(path, dependencies = {}, globals = {}) {
 }
 
 const configModule = loadModule("../src/services/dealConfig.ts");
+
+test("offer cards load all distinct totals across capped pages taking over 30 seconds in total", async () => {
+  const source = readFileSync(new URL("../src/services/supabase.ts", import.meta.url), "utf8");
+  const ast = ts.createSourceFile("supabase.ts", source, ts.ScriptTarget.ES2022, true);
+  const loader = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "loadOfferConfigurationMetrics");
+  assert.ok(loader);
+  const input = Array.from({ length: 157 }, (_, i) => ({ id: String(i).padStart(4, "0"), external_offer_id: `offer-${i % 29}`, sku: `sku-${i}`, allow_stacking: i === 0 }));
+  input.push({ ...input[0], id: "0157" }, { ...input[1], id: "0158" });
+  const cursors = [];
+  let elapsed = 0;
+  const deadlines = [];
+  const client = createClient("https://test.supabase.co", "test-key", {
+    accessToken: async () => "test-token",
+    global: { fetch: async (url, options) => {
+      const params = new URL(url).searchParams;
+      assert.equal(params.get("select"), "id,external_offer_id,sku,allow_stacking");
+      assert.equal(params.get("is_active"), "eq.true");
+      assert.equal(params.get("order"), "id.asc");
+      assert.equal(params.has("offset"), false);
+      assert.equal(new Headers(options.headers).get("Prefer")?.includes("count=exact") ?? false, false);
+      const cursor = params.get("id");
+      cursors.push(cursor);
+      // Each request takes 20 simulated seconds, while the full read takes 60.
+      elapsed += 20000;
+      deadlines.forEach(timer => { if (timer.at <= elapsed) timer.controller.abort(); });
+      options.signal.throwIfAborted();
+      const page = input.filter(row => !cursor || row.id > cursor.slice(3)).slice(0, 80);
+      return new Response(JSON.stringify(page), { status: 200, headers: { "Content-Type": "application/json" } });
+    } },
+  });
+  const exports = {};
+  vm.runInNewContext(ts.transpileModule(loader.getText(ast), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText, {
+    exports, supabase: client,
+    AbortSignal: {
+      any: signals => AbortSignal.any(signals),
+      timeout(ms) {
+        const controller = new AbortController();
+        deadlines.push({ at: elapsed + ms, controller });
+        return controller.signal;
+      },
+    },
+  });
+  const metrics = await exports.loadOfferConfigurationMetrics();
+  assert.equal(metrics.offers, 29);
+  assert.equal(metrics.offerSkus, 157);
+  assert.equal(metrics.combinable, 1);
+  assert.deepEqual(cursors, [null, "gt.0079", "gt.0158"]);
+  assert.equal(elapsed, 60000);
+  const cancelled = new AbortController();
+  cancelled.abort();
+  await assert.rejects(exports.loadOfferConfigurationMetrics(cancelled.signal), /abort/i);
+  assert.equal(cursors.length, 3, "A cancelled refresh must not start another request");
+});
+
+test("opening offer settings refreshes cards without launching a search", () => {
+  const source = readFileSync(new URL("../src/features/admin/AdminPage.tsx", import.meta.url), "utf8");
+  const ast = ts.createSourceFile("AdminPage.tsx", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
+  let effect;
+  function visit(node) {
+    if (ts.isCallExpression(node) && node.expression.getText(ast) === "useEffect" && node.arguments[0]?.getText(ast).includes('activeLoad !== "offer-settings"')) effect = node.arguments[0];
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  assert.ok(effect);
+  let refreshed = 0;
+  const run = vm.runInNewContext(`(${ts.transpileModule(effect.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText.trim().replace(/;$/, "")})`, {
+    activeLoad: "offer-settings", AbortController,
+    window: { setTimeout: () => assert.fail("Do not cancel the entire background read with one timer"), clearTimeout: () => {} },
+    setOfferMetricsLoading: () => {}, setOfferMetricsError: () => {}, setOfferMetrics: () => {},
+    loadOfferConfigurationRows: () => assert.fail("Entering the section must not search"),
+    setOfferConfigLoading: () => assert.fail("Cards must not change the search button state"),
+    loadOfferConfigurationMetrics: async () => { refreshed++; return { offers: 29, offerSkus: 157, combinable: 0 }; },
+  });
+  const cleanup = run();
+  assert.equal(refreshed, 1);
+  cleanup();
+});
+
+test("offer configuration button leaves its loading state after a search error", async () => {
+  const source = readFileSync(new URL("../src/features/admin/AdminPage.tsx", import.meta.url), "utf8");
+  const ast = ts.createSourceFile("AdminPage.tsx", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
+  let load;
+  function visit(node) {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === "loadOfferConfigurationRows") load = node;
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  assert.ok(load);
+  for (const rejects of [false, true]) {
+    const loading = [];
+    const messages = [];
+    const context = {
+      Error, offerConfigFilters: {}, setOfferConfigLoading: value => loading.push(value),
+      setMessage: value => messages.push(value),
+      setOfferConfigRows: () => assert.fail("A failed search must preserve the current rows"),
+      searchOfferConfigurations: async () => {
+        if (rejects) throw new Error("connection lost");
+        return { ok: false, message: "connection lost" };
+      },
+    };
+    vm.createContext(context);
+    vm.runInContext(ts.transpileModule(load.getText(ast), {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText, context);
+    await context.loadOfferConfigurationRows();
+    assert.deepEqual(loading, [true, false]);
+    assert.deepEqual(messages, ["connection lost"]);
+  }
+});
+
+test("offer configuration search returns all 157 rows even with a smaller server page cap", async () => {
+  const source = readFileSync(new URL("../src/services/supabase.ts", import.meta.url), "utf8");
+  const ast = ts.createSourceFile("supabase.ts", source, ts.ScriptTarget.ES2022, true);
+  const search = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "searchOfferConfigurations");
+  assert.ok(search);
+  const input = Array.from({ length: 157 }, (_, index) => ({
+    id: `rule-${index}`, external_offer_id: `offer-${index}`, promotion_id: "promo", sku: `sku-${index}`, segment: " - ",
+  }));
+  const ranges = [];
+  const filters = [];
+  const orders = [];
+  let fail = false;
+  const request = {
+    select() { return this; },
+    eq(...args) { filters.push(args); return this; },
+    ilike(...args) { filters.push(args); return this; },
+    order(column) { orders.push(column); return this; },
+    range(from, to) {
+      ranges.push([from, to]);
+      return { abortSignal: async () => fail ? { data: null, error: { message: "connection lost" } }
+        : { data: input.slice(from, Math.min(to + 1, from + 80)), error: null, count: input.length } };
+    },
+  };
+  const exports = {};
+  const pagingSource = readFileSync(new URL("../src/services/readPromotionPages.ts", import.meta.url), "utf8");
+  vm.runInNewContext(ts.transpileModule(`${pagingSource}\n${search.getText(ast)}`, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText, {
+    exports, supabase: { from: () => ({ ...request }) }, AbortSignal,
+    escapePostgrestPattern: value => value,
+    unique: values => [...new Set(values)],
+    loadPromotionMapByIds: async () => new Map([["promo", {}]]),
+    readDealSettings: async () => [], readOfferDetails: async () => [],
+    fetchKitCompanionRows: async () => [], mapOfferRules: () => [],
+    applyOfferDetails: rules => rules, mapOfferConfigurationRows: rows => rows,
+  });
+  const result = await exports.searchOfferConfigurations({ promotionId: "promo", offerId: "offer", sku: "sku" });
+  assert.equal(result.ok, true);
+  assert.equal(result.rows.length, 157);
+  assert.deepEqual(Array.from(result.rows, row => row.id), input.map(row => row.id));
+  assert.deepEqual(ranges.map(([from]) => from), [0, 80]);
+  assert.deepEqual(orders, ["promotion_id", "id", "promotion_id", "id"]);
+  const pageFilters = [["is_active", true], ["promotion_id", "%promo%"], ["external_offer_id", "%offer%"], ["sku", "sku"]];
+  assert.deepEqual(filters, [...pageFilters, ...pageFilters]);
+  fail = true;
+  const failure = await exports.searchOfferConfigurations({});
+  assert.equal(failure.ok, false);
+  assert.match(failure.message, /connection lost/);
+});
+
+const detailModule = loadModule("../src/services/offerConfiguration.ts");
 const pricing = loadModule("../src/services/promotions.ts", { "./dealConfig": configModule });
-const engine = loadModule("../src/services/dealEngine.ts", { "./promotions": pricing, "./dealConfig": configModule });
+const kitSets = loadModule("../src/services/kitSets.ts");
+const engine = loadModule("../src/services/dealEngine.ts", { "./promotions": pricing, "./dealConfig": configModule, "./kitSets": kitSets });
 const { promotionSegmentFilter } = loadModule("../src/services/promotionFilters.ts");
 
 test("PostgREST segment filter preserves spaces in the imported universal segment", () => {
@@ -85,9 +250,9 @@ test("remainders never requalify a tier using already consumed units", () => {
 });
 
 test("kits require every SKU in proportion and return surplus to individual offers", () => {
-  const kit = rule("kit", { deal: { kind: "KIT", items: [
-    { sku: "A", quantity: 2, benefit: { type: "OVERRIDE_PRICE", value: 50 } },
-    { sku: "B", quantity: 1, benefit: { type: "PERCENT_OFF", value: 100 } },
+  const kit = rule("kit", { deal: { kind: "KIT", sets: [
+    { id: "1", skus: ["A"], quantity: 2, thresholdType: "EXACT", benefit: { type: "OVERRIDE_PRICE", value: 50 } },
+    { id: "2", skus: ["B"], quantity: 1, thresholdType: "EXACT", benefit: { type: "PERCENT_OFF", value: 100 } },
   ] } });
   assert.equal(quoteFor([{ sku: "A", quantity: 4 }], [kit]).subtotalFinal, 400);
   const summary = quoteFor([{ sku: "A", quantity: 5 }, { sku: "B", quantity: 2 }], [kit, rule("unit")]);
@@ -96,22 +261,18 @@ test("kits require every SKU in proportion and return surplus to individual offe
   assert.equal(bySku(summary, "A").allocations.reduce((sum, b) => sum + b.quantity, 0), 5);
 });
 
-test("legacy kits with four or more SKU without threshold are omitted, while configured or small kits apply", () => {
-  // 4 SKUs without threshold/type configured:
-  const unconfiguredKits = ["A", "B", "C", "D"].map(sku => rule("legacy-kit", { type: "KIT_OFFER", sku, minQuantity: 1, thresholdQuantity: undefined, thresholdType: undefined, discountPercent: 50 }));
-  assert.equal(quoteFor(unconfiguredKits.map(r => ({ sku: r.sku, quantity: 1 })), unconfiguredKits).subtotalFinal, 400);
-
-  // 2 SKUs without threshold/type configured: should apply as 2-SKU kit
-  const smallKit = ["A", "B"].map(sku => rule("small-kit", { type: "KIT_OFFER", sku, minQuantity: 1, thresholdQuantity: undefined, thresholdType: undefined, discountPercent: 50 }));
-  assert.equal(quoteFor(smallKit.map(r => ({ sku: r.sku, quantity: 1 })), smallKit).subtotalFinal, 100);
-
-  // 4 SKUs WITH threshold configured: should apply
-  const configuredKits = ["A", "B", "C", "D"].map(sku => rule("conf-kit", { type: "KIT_OFFER", sku, minQuantity: 1, thresholdQuantity: 1, thresholdType: "EXACT", discountPercent: 50 }));
-  assert.equal(quoteFor(configuredKits.map(r => ({ sku: r.sku, quantity: 1 })), configuredKits).subtotalFinal, 200);
+test("imported kits of every size remain pending even with SKU thresholds", () => {
+  for (const size of [1, 2, 4, 5]) {
+    const rules = catalog.slice(0, size).map(p => rule("pending", { type: "KIT_OFFER", sku: p.sku, thresholdQuantity: 1, thresholdType: "EXACT", discountPercent: 100 }));
+    const summary = quoteFor(rules.map(r => ({ sku: r.sku, quantity: 1 })), rules);
+    assert.equal(summary.pricingError, undefined);
+    assert.equal(summary.subtotalFinal, size * 100);
+    assert.equal(pricing.availableOfferGroups(rules, "A", "1002").length, 0);
+  }
 });
 
 test("overlapping kits compete across the complete quote, including opportunity cost", () => {
-  const kit = (id, skus, discount) => rule(id, { deal: { kind: "KIT", items: skus.map(sku => ({ sku, quantity: 1, benefit: { type: "PERCENT_OFF", value: discount } })) } });
+  const kit = (id, skus, discount) => rule(id, { deal: { kind: "KIT", sets: skus.map(sku => ({ id: sku, skus: [sku], quantity: 1, thresholdType: "EXACT", benefit: { type: "PERCENT_OFF", value: discount } })) } });
   const summary = quoteFor(["A", "B", "C"].map(sku => ({ sku, quantity: 1 })), [kit("AB", ["A", "B"], 50), kit("AC", ["A", "C"], 60), rule("C-cheap", { sku: "C", discountPercent: 90 })]);
   assert.equal(summary.subtotalFinal, 110); // AB 100 + C 10, versus AC 80 + B 100.
   assert.ok(bySku(summary, "A").allocations.every(b => !b.offers.some(r => r.id === "AC")));
@@ -347,7 +508,7 @@ test("CSV worker imports Detail change amount as override price, including alias
   for (const discountType of ["OVERRIDE_PRICE", "PRICE_OVERRIDE", "override_price"]) {
     let response;
     const self = { postMessage: value => { response = value; } };
-    loadModule("../src/workers/fileParser.worker.ts", { "read-excel-file/web-worker": {} }, { self });
+    loadModule("../src/workers/fileParser.worker.ts", { "read-excel-file/web-worker": {}, xlsx: {}, "../services/offerConfiguration": loadModule("../src/services/offerConfiguration.ts") }, { self });
     const csv = [
       "Id de oferta;Id de promo;Articulo;Tipo Oferta;Detail change amount;Selling unit retail;Tipo de Descuento;Segmento",
       `fixed;promo;test-sku;fixed_qty_price;80;100;${discountType};-`,
@@ -373,7 +534,7 @@ test("4-SKU kit configured via deal (configuraciones adicionales) applies even w
   const customKit = rule("custom-4kit", {
     deal: {
       kind: "KIT",
-      items: ["A", "B", "C", "D"].map(sku => ({ sku, quantity: 1, benefit: { type: "PERCENT_OFF", value: 40 } })),
+      sets: ["A", "B", "C", "D"].map(sku => ({ id: sku, skus: [sku], quantity: 1, thresholdType: "EXACT", benefit: { type: "PERCENT_OFF", value: 40 } })),
     },
   });
   const summary = quoteFor(["A", "B", "C", "D"].map(sku => ({ sku, quantity: 1 })), [customKit]);
@@ -570,7 +731,11 @@ test("buildQuote groups kit companion items together even if added at separate p
     { sku: "HANDLE", quantity: 1 },
   ];
 
-  const summary = quoteFor(items, [kitRuleA, kitRuleB], "1002", testCatalog);
+  const deal = { kind: "KIT", sets: [
+    { id: "1", skus: ["LOCK"], quantity: 1, thresholdType: "EXACT", benefit: { type: "PERCENT_OFF", value: 100 } },
+    { id: "2", skus: ["HANDLE"], quantity: 1, thresholdType: "EXACT", benefit: { type: "OVERRIDE_PRICE", value: 300 } },
+  ] };
+  const summary = quoteFor(items, [{ ...kitRuleA, deal }, { ...kitRuleB, deal }], "1002", testCatalog);
 
   // In the resulting summary.lines, LOCK and HANDLE must be consecutive (positions 0 and 1)!
   assert.equal(summary.lines[0].sku, "LOCK");
@@ -585,51 +750,268 @@ test("buildQuote groups kit companion items together even if added at separate p
   assert.equal(summary.lines[3].itemIndex, 2); // PAINT was items[2]
 });
 
-test("kit companion detection is resilient to trailing spaces in SKUs or cart items", () => {
-  const kitRule1 = rule("kit-49332", {
-    promotionId: "49332",
-    promotionName: "COMASA_BIFOLIAR_S",
-    type: "KIT_OFFER",
-    sku: "140513334   ", // Note trailing whitespace from database
-    discountPercent: 100,
-    minQuantity: 1,
-    segment: "1102",
-  });
-  const kitRule2 = rule("kit-49332", {
-    promotionId: "49332",
-    promotionName: "COMASA_BIFOLIAR_S",
-    type: "KIT_OFFER",
-    sku: "163744160   ", // Note trailing whitespace from database
-    fixedPrice: 278.26,
-    minQuantity: 1,
-    segment: "1102",
-  });
+test("pending legacy kits cannot appear as an automatic offer even with trimmed SKUs", () => {
+  const rules = ["A   ", "B   "].map(sku => rule("pending", { type: "KIT_OFFER", sku }));
+  assert.equal(pricing.availableOfferGroups(rules, "A", "1002").length, 0);
+});
 
-  // availableOfferGroups should locate the kit even if queried with or without whitespace:
-  const groups = pricing.availableOfferGroups([kitRule1, kitRule2], "140513334", "1102");
-  assert.equal(groups.length, 1);
-  assert.equal(groups[0].isKit, true);
-  assert.equal(groups[0].rules.length, 2);
+const setOf = (id, skus, quantity, thresholdType = "EXACT", benefit) => ({ id, skus, quantity, thresholdType, ...(benefit ? { benefit } : {}) });
+const percent = value => ({ type: "PERCENT_OFF", value });
+const setKit = (sets, changes = {}) => rule("23456", { type: "KIT_OFFER", deal: { kind: "KIT", sets }, ...changes });
 
-  // Companion check logic with whitespace:
-  function normSku(val) {
-    return String(val ?? "").trim();
+test("SET alternatives: three mixed purchases and two gifts require both complete SETs", () => {
+  const kit = setKit([setOf("1", ["A", "B", "C"], 3), setOf("2", ["D"], 2, "EXACT", percent(100))]);
+  for (const purchases of [[{ sku: "A", quantity: 3 }], [{ sku: "A", quantity: 1 }, { sku: "C", quantity: 2 }], ["A", "B", "C"].map(sku => ({ sku, quantity: 1 }))]) {
+    const summary = quoteFor([...purchases, { sku: "D", quantity: 2 }], [kit]);
+    assert.equal(summary.pricingError, undefined);
+    assert.equal(summary.subtotalFinal, 300);
+    assert.equal(bySku(summary, "D").allocations[0].kitSet, "2");
   }
-  function kitMissingCompanionSkus(offerGroup, currentSku, currentItems = []) {
-    if (!offerGroup.isKit) return [];
-    const cleanCurrentSku = normSku(currentSku);
-    const cartSkus = new Set(currentItems.map((item) => normSku(item.sku)).filter(Boolean));
-    const companionSkus = [...new Set(offerGroup.rules.map((r) => normSku(r.sku)))].filter((sku) => sku && sku !== cleanCurrentSku);
-    return companionSkus.filter((sku) => !cartSkus.has(sku));
+  assert.equal(quoteFor([{ sku: "A", quantity: 3 }, { sku: "D", quantity: 1 }], [kit]).subtotalFinal, 400);
+  assert.equal(quoteFor([{ sku: "A", quantity: 2 }, { sku: "D", quantity: 3 }], [kit]).subtotalFinal, 500);
+});
+
+test("exact 18 of 20 reprices only the two leftovers with a qualifying offer", () => {
+  const kit = setKit([setOf("1", ["A"], 18, "EXACT", percent(50))]);
+  const offers = [kit, rule("two", { minQuantity: 2, discountPercent: 20 }), rule("five", { minQuantity: 5, discountPercent: 15 })];
+  const summary = quoteFor([{ sku: "A", quantity: 20 }], offers);
+  assert.equal(summary.subtotalFinal, 1060);
+  const allocations = summary.lines[0].allocations;
+  assert.equal(allocations.find(a => a.kitSet === "1").quantity, 18);
+  assert.equal(allocations.find(a => a.offers.some(o => o.id === "two")).quantity, 2);
+  assert.ok(allocations.every(a => !a.offers.some(o => o.id === "five")));
+});
+
+test("minimum 30 benefits all 50 units but never 29", () => {
+  const kit = setKit([setOf("1", ["A"], 30, "MINIMUM", percent(10))]);
+  for (const [quantity, expected] of [[29, 2900], [30, 2700], [50, 4500]]) {
+    const summary = quoteFor([{ sku: "A", quantity }], [kit]);
+    assert.equal(summary.pricingError, undefined);
+    assert.equal(summary.subtotalFinal, expected);
+    if (quantity >= 30) assert.equal(summary.lines[0].allocations.filter(a => a.kitSet).reduce((sum, a) => sum + a.quantity, 0), quantity);
   }
+});
 
-  // Cart contains companion SKU 163744160 (clean or with whitespace):
-  const cartWithCompanion = [{ sku: "163744160", quantity: 1 }];
-  const missing = kitMissingCompanionSkus(groups[0], "140513334", cartWithCompanion);
-  assert.equal(missing.length, 0, "Companion SKU already in cart should not be marked as missing");
+test("minimum SET excess applies only when every other SET is complete", () => {
+  const kit = setKit([setOf("1", ["A", "B"], 30, "MINIMUM", percent(10)), setOf("2", ["D"], 2, "EXACT", percent(100))]);
+  const items = [{ sku: "A", quantity: 20 }, { sku: "B", quantity: 30 }];
+  assert.equal(quoteFor([...items, { sku: "D", quantity: 1 }], [kit]).subtotalFinal, 5100);
+  const summary = quoteFor([...items, { sku: "D", quantity: 2 }], [kit]);
+  assert.equal(summary.pricingError, undefined);
+  assert.equal(summary.subtotalFinal, 4500);
+});
 
-  // Cart does NOT contain companion SKU:
-  const emptyCart = [];
-  const missingInEmpty = kitMissingCompanionSkus(groups[0], "140513334", emptyCart);
-  assert.deepEqual(missingInEmpty, ["163744160"]);
+test("shared SKU cannot count twice and retains its SET-specific benefit", () => {
+  const kit = setKit([setOf("1", ["A", "B"], 3), setOf("2", ["A", "D"], 2, "EXACT", percent(100))]);
+  assert.equal(quoteFor([{ sku: "A", quantity: 3 }], [kit]).subtotalFinal, 300);
+  const summary = quoteFor([{ sku: "A", quantity: 5 }], [kit]);
+  assert.equal(summary.subtotalFinal, 300);
+  assert.equal(summary.lines[0].allocations.find(a => a.kitSet === "1").quantity, 3);
+  assert.equal(summary.lines[0].allocations.find(a => a.kitSet === "2").quantity, 2);
+  assert.match(engine.allocationLabel(summary.lines[0].allocations), /SET 2/);
+});
+
+test("assignment backtracks so flexible SETs do not take units needed by another SET", () => {
+  const kit = setKit([setOf("flex", ["A", "B"], 1), setOf("only-A", ["A"], 1, "EXACT", percent(100))]);
+  const summary = quoteFor([{ sku: "A", quantity: 1 }, { sku: "B", quantity: 1 }], [kit]);
+  assert.equal(summary.subtotalFinal, 100);
+  assert.equal(bySku(summary, "A").allocations[0].kitSet, "only-A");
+});
+
+test("shared SET alternatives choose the cheapest whole quote, independent of SKU order", () => {
+  const products = [{ ...catalog[0], listPrice: 100 }, { ...catalog[1], listPrice: 300 }];
+  for (const skus of [["A", "B"], ["B", "A"]]) {
+    const kit = setKit([setOf("pay", skus, 1), setOf("free", skus, 1, "EXACT", percent(100))]);
+    const summary = quoteFor([{ sku: "A", quantity: 1 }, { sku: "B", quantity: 1 }], [kit], "1002", products);
+    assert.equal(summary.subtotalFinal, 100);
+    assert.equal(bySku(summary, "B").finalTotal, 0);
+  }
+});
+
+test("SET unit override, repeated kits and leftovers conserve every unit", () => {
+  const kit = setKit([setOf("1", ["A", "B"], 3, "EXACT", { type: "OVERRIDE_PRICE", value: 50 }), setOf("2", ["D"], 2, "EXACT", percent(100))]);
+  const summary = quoteFor([{ sku: "A", quantity: 7 }, { sku: "D", quantity: 4 }], [kit]);
+  assert.equal(summary.subtotalFinal, 400);
+  assert.equal(bySku(summary, "A").allocations.reduce((n, a) => n + a.quantity, 0), 7);
+  assert.equal(bySku(summary, "D").allocations.reduce((n, a) => n + a.quantity, 0), 4);
+});
+
+test("SET kits compete with unit offers and packages instead of forcing a kit", () => {
+  const kit = setKit([setOf("1", ["A"], 3, "EXACT", percent(10))]);
+  assert.equal(quoteFor([{ sku: "A", quantity: 3 }], [kit, rule("cheaper", { discountPercent: 50 })]).subtotalFinal, 150);
+  assert.equal(quoteFor([{ sku: "A", quantity: 3 }], [kit, pack("cheaper-pack", 3, 100)]).subtotalFinal, 100);
+});
+
+test("whole-offer stacking applies consistently to all SETs using existing combination rules", () => {
+  const sets = [setOf("1", ["A"], 1, "EXACT", percent(10)), setOf("2", ["B"], 1, "EXACT", percent(10))];
+  const items = [{ sku: "A", quantity: 1 }, { sku: "B", quantity: 1 }];
+  const units = ["A", "B"].map(sku => rule(`unit-${sku}`, { sku, discountPercent: 20 }));
+  assert.equal(quoteFor(items, [setKit(sets, { allowStacking: false }), ...units]).subtotalFinal, 160);
+  assert.equal(quoteFor(items, [setKit(sets, { allowStacking: true }), ...units]).subtotalFinal, 144);
+});
+
+test("legacy configured kits remain readable but pending until SETs are saved", () => {
+  const legacy = { kind: "KIT", items: ["A", "B"].map(sku => ({ sku, quantity: 1, benefit: percent(100) })) };
+  const config = configModule.validateDealConfig(legacy);
+  const kit = rule("old", { type: "KIT_OFFER", deal: config });
+  assert.equal(configModule.isPendingKit(kit), true);
+  assert.equal(quoteFor([{ sku: "A", quantity: 1 }, { sku: "B", quantity: 1 }], [kit]).subtotalFinal, 200);
+});
+
+test("SET validation allows overlap across SETs, rejects invalid thresholds and duplicates within a SET", () => {
+  const valid = [setOf("1", ["A", "B"], 3), setOf("2", ["A"], 2, "MINIMUM", percent(100))];
+  assert.equal(configModule.validateDealConfig({ kind: "KIT", sets: valid }).sets.length, 2);
+  for (const sets of [[], [valid[0], valid[0]], [setOf("1", [], 1)], [setOf("1", ["A", "A"], 1)], [setOf("1", ["A"], 0)], [setOf("1", ["A"], 1, "bad")], [setOf("1", ["A"], 1, "EXACT", percent(101))]]) {
+    assert.throws(() => configModule.validateDealConfig({ kind: "KIT", sets }));
+  }
+});
+
+test("SET configuration round-trips through the independent settings store", async () => {
+  const settings = loadModule("../src/services/dealSettings.ts", { "./dealConfig": configModule });
+  const config = { kind: "KIT", sets: [setOf("1", ["A", "B"], 3), setOf("2", ["A", "D"], 2, "EXACT", percent(100))] };
+  let stored;
+  const client = { from(table) {
+    assert.equal(table, "promotion_deal_configs");
+    let offset = 0;
+    const query = {
+      select() { return query; }, order() { return query; }, in() { return query; },
+      range(start) { offset = start; return query; },
+      then(resolve) { return Promise.resolve({ data: offset ? [] : [stored], error: null }).then(resolve); },
+      async upsert(row) { stored = row; return { error: null }; },
+    };
+    return query;
+  } };
+  await settings.writeDealSetting(client, { promotion_id: "p", offer_id: "23456", segment: " 1002 ", config });
+  const loaded = await settings.readDealSettings(client, ["p"]);
+  assert.equal(loaded[0].segment, "1002");
+  assert.equal(JSON.stringify(loaded[0].config), JSON.stringify(config));
+  assert.equal(configModule.isPendingKit({ type: "KIT_OFFER", deal: loaded[0].config }), false);
+});
+
+const detail = (offer, sku, set = "", quantity = 1, threshold_type = "EXACT") => ({ offer_id: offer, sku, set_id: set, quantity, threshold_type });
+const detailHeader = ["TIPO", "Id de oferta", "SET", "ITEM", "Umbral", "Cantidad", "VALID"];
+test("configuration template ignores A and VALID, keeps identifier zeroes and never inherits SET", () => {
+  const parsed = detailModule.parseOfferDetails([detailHeader,
+    ["arbitrary text", "001", "SET 1", "0007", "Exacto", "1", "no"],
+    ["KIT", "002", "", "0008", "Mínimo", "24", "yes"],
+  ]);
+  assert.equal(parsed.errors.length, 0);
+  assert.equal(parsed.rows[0].sku, "0007");
+  assert.equal(parsed.rows[0].set_id, "1");
+  assert.equal(parsed.rows[1].set_id, "");
+});
+test("configuration rejects duplicate rows, inconsistent SET quantities and invalid numbers", () => {
+  for (const rows of [
+    [["", "1", "SET 1", "A", "Exacto", 1], ["", "1", "SET 1", "A", "Exacto", 1]],
+    [["", "1", "SET 1", "A", "Exacto", 1], ["", "1", "SET 1", "B", "Exacto", 2]],
+    [["", "1", "", "A", "Exacto", "2 units"]],
+    [["", "1", "", "A", "Exacto", 0]],
+    [["", "1", "", "A", "unknown", 1]],
+  ]) assert.ok(detailModule.parseOfferDetails([detailHeader, ...rows]).errors.length);
+});
+test("one SET with seven eligible SKUs needs one alternative, not seven units", () => {
+  const products = Array.from({ length: 7 }, (_, i) => ({ ...catalog[0], sku: String(i) }));
+  const rules = products.map(p => rule("kit", { sku: p.sku, type: "KIT_OFFER", discountPercent: 50 }));
+  const resolved = detailModule.applyOfferDetails(rules, products.map(p => detail("kit", p.sku, "1")));
+  const summary = quoteFor([{ sku: "6", quantity: 1 }], resolved, "1002", products);
+  assert.equal(summary.pricingError, undefined);
+  assert.equal(summary.subtotalFinal, 50);
+  assert.equal(resolved[0].deal.sets[0].quantity, 1);
+});
+test("same SET uses each selected SKU benefit from the report", () => {
+  const resolved = detailModule.applyOfferDetails([
+    rule("kit", { type: "KIT_OFFER", sku: "A", discountPercent: 20 }),
+    rule("kit", { type: "KIT_OFFER", sku: "B", discountType: "OVERRIDE_PRICE", fixedPrice: 30 }),
+  ], [detail("kit", "A", "1"), detail("kit", "B", "1")]);
+  const summary = quoteFor([{ sku: "A", quantity: 1 }, { sku: "B", quantity: 1 }], resolved);
+  assert.equal(summary.pricingError, undefined);
+  assert.equal(summary.subtotalFinal, 110);
+  assert.equal(bySku(summary, "A").finalTotal, 80);
+  assert.equal(bySku(summary, "B").finalTotal, 30);
+});
+test("global conditions do not leak benefits or eligibility across promotions and segments", () => {
+  const resolved = detailModule.applyOfferDetails([
+    rule("kit", { promotionId: "p1", type: "KIT_OFFER", segment: "1002", discountPercent: 10 }),
+    rule("kit", { promotionId: "p2", type: "KIT_OFFER", segment: "1003", discountPercent: 80 }),
+  ], [detail("kit", "A", "1")]);
+  assert.equal(quoteFor([{ sku: "A", quantity: 1 }], resolved, "1002").subtotalFinal, 90);
+  assert.equal(quoteFor([{ sku: "A", quantity: 1 }], resolved, "1003").subtotalFinal, 20);
+});
+test("incomplete or changed kit remains pending, invalid benefits are explicit", () => {
+  const rules = [rule("kit", { type: "KIT_OFFER" })];
+  const missing = detailModule.applyOfferDetails(rules, [detail("kit", "A", "1"), detail("kit", "B", "2")]);
+  assert.equal(configModule.isPendingKit(missing[0]), true);
+  assert.throws(() => detailModule.applyOfferDetails([rule("kit")], [detail("kit", "A", "1")]), /tipo/);
+  assert.throws(() => detailModule.applyOfferDetails([rule("kit", { type: "KIT_OFFER", discountPercent: undefined })], [detail("kit", "A", "1")]), /beneficio/);
+});
+test("Exact 1 defaults apply discount and fixed unit price twenty times", () => {
+  const discounts = detailModule.applyOfferDetails([rule("23245", { discountPercent: 20 })], []);
+  assert.equal(discounts[0].thresholdType, "EXACT");
+  assert.equal(discounts[0].thresholdQuantity, 1);
+  assert.equal(quoteFor([{ sku: "A", quantity: 20 }], discounts).subtotalFinal, 1600);
+  const fixed = detailModule.applyOfferDetails([rule("price", { type: "FIXED_QTY_PRICE", discountType: "OVERRIDE_PRICE", fixedPrice: 35 })], []);
+  assert.equal(quoteFor([{ sku: "A", quantity: 20 }], fixed).subtotalFinal, 700);
+});
+test("Exact 1 retains compatible stacking and handles large whole orders efficiently", () => {
+  const rules = detailModule.applyOfferDetails([rule("a", { allowStacking: true, discountPercent: 10 }), rule("b", { allowStacking: true, discountPercent: 20 })], []);
+  const summary = quoteFor([{ sku: "A", quantity: 18000 }], rules);
+  assert.equal(summary.pricingError, undefined);
+  assert.equal(summary.subtotalFinal, 1296000);
+});
+test("non-kit exact groups repeat with leftovers, while minimum benefits all qualified units", () => {
+  const source = [rule("offer", { discountPercent: 50 })];
+  const exact = detailModule.applyOfferDetails(source, [detail("offer", "A", "", 3)]);
+  const minimum = detailModule.applyOfferDetails(source, [detail("offer", "A", "", 3, "MINIMUM")]);
+  assert.equal(quoteFor([{ sku: "A", quantity: 8 }], exact).subtotalFinal, 500);
+  assert.equal(quoteFor([{ sku: "A", quantity: 8 }], minimum).subtotalFinal, 400);
+  assert.equal(quoteFor([{ sku: "A", quantity: 2 }], minimum).subtotalFinal, 200);
+});
+test("global non-kit overrides only the submitted SKU and preserves old special conditions", () => {
+  const legacy = pack("unrelated", 3, 100);
+  const result = detailModule.applyOfferDetails([rule("offer"), rule("offer", { sku: "B", thresholdQuantity: 8 }), legacy], [detail("offer", "A", "", 2)]);
+  assert.equal(result[0].thresholdQuantity, 2);
+  assert.equal(result[1].thresholdQuantity, 8);
+  assert.equal(result[2].deal.price, 100);
+  assert.equal(detailModule.applyOfferDetails([rule("old", { thresholdQuantity: 250 })], [])[0].thresholdQuantity, 250);
+});
+test("per-SKU benefit validation rejects missing or extraneous benefits", () => {
+  assert.throws(() => configModule.validateDealConfig({ kind: "KIT", sets: [{ id: "1", skus: ["A", "B"], quantity: 1, thresholdType: "EXACT", skuBenefits: { A: { type: "PERCENT_OFF", value: 10 } } }] }), /SET/);
+});
+
+test("Excel worker preserves formatted SKU zeroes and reads formatted quantities as numbers", async () => {
+  const XLSX = await import("xlsx");
+  const sheet = XLSX.utils.aoa_to_sheet([detailHeader, ["ignored", "001", "", 7, "Mínimo", 18000, ""]]);
+  sheet.D2.z = "0000"; sheet.F2.z = "#,##0";
+  const workbook = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(workbook, sheet, "Config");
+  const buffer = XLSX.write(workbook, { type: "array", bookType: "xlsx" });
+  let response; const self = { postMessage: value => { response = value; } };
+  loadModule("../src/workers/fileParser.worker.ts", { "read-excel-file/web-worker": {}, xlsx: XLSX, "../services/offerConfiguration": detailModule }, { self });
+  await self.onmessage({ data: { id: "xlsx", mode: "offer-details", file: { name: "config.xlsx", size: buffer.byteLength, arrayBuffer: async () => buffer } } });
+  assert.equal(response.ok, true);
+  assert.equal(response.result.errors.length, 0);
+  assert.equal(response.result.rows[0].sku, "0007");
+  assert.equal(response.result.rows[0].quantity, 18000);
+});
+test("global detail reads continue when database page caps are below 500", async () => {
+  const store = loadModule("../src/services/offerConfigurationStore.ts");
+  const rows = [detail("o", "A"), detail("o", "B"), detail("o", "C")];
+  const ranges = [];
+  const client = { from() {
+    const query = { select: () => query, in: () => query, order: () => query,
+      range: async (from, to) => { ranges.push([from, to]); return { data: rows.slice(from, from + 1), error: null }; } };
+    return query;
+  } };
+  const result = await store.readOfferDetails(client, ["o"]);
+  assert.equal(result.length, 3);
+  assert.deepEqual(ranges.map(([start]) => start), [0, 1, 2, 3]);
+});
+test("global detail reads distinguish a missing migration from operational errors", async () => {
+  const store = loadModule("../src/services/offerConfigurationStore.ts");
+  const client = code => ({ from() {
+    const query = { select: () => query, in: () => query, order: () => query,
+      range: async () => ({ data: null, error: { code, message: "failure" } }) };
+    return query;
+  } });
+  assert.equal(await store.readOfferDetails(client("PGRST205"), ["o"]), null);
+  await assert.rejects(() => store.readOfferDetails(client("42501"), ["o"]), /configuraciones/);
 });

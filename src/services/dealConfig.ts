@@ -1,4 +1,9 @@
-import type { DealConfig } from "../types/domain";
+import type { DealConfig, OfferRule } from "../types/domain";
+
+export function isPendingKit(rule: Pick<OfferRule, "type" | "deal">): boolean {
+  return (rule.type === "KIT_OFFER" || rule.deal?.kind === "KIT") &&
+    !(rule.deal?.kind === "KIT" && rule.deal.sets?.length);
+}
 
 export function validateDealConfig(value: unknown): DealConfig {
   if (!value || typeof value !== "object") throw new Error("La regla debe ser un objeto.");
@@ -14,6 +19,15 @@ export function validateDealConfig(value: unknown): DealConfig {
       if (positive(config.quantity) && price(config.price)) return { kind: "PACK", quantity: config.quantity, price: config.price };
       break;
     case "KIT":
+      if (config.sets !== undefined) {
+        if (Array.isArray(config.sets) && config.sets.length > 0 && skus(config.sets.map((set: any) => set?.id)) &&
+          config.sets.every((set: any) => skus(set.skus) && units(set.quantity) &&
+            ["EXACT", "MINIMUM"].includes(set.thresholdType) && (set.benefit === undefined || benefit(set.benefit)) &&
+            (set.skuBenefits === undefined || (set.skuBenefits && typeof set.skuBenefits === "object" && !Array.isArray(set.skuBenefits) && set.skus.every((sku: string) => benefit(set.skuBenefits[sku])) && Object.keys(set.skuBenefits).every(sku => set.skus.includes(sku)))))) {
+          return { kind: "KIT", sets: config.sets.map((set: any) => ({ id: set.id, skus: set.skus, quantity: set.quantity, thresholdType: set.thresholdType, ...(set.benefit ? { benefit: set.benefit } : {}), ...(set.skuBenefits ? { skuBenefits: set.skuBenefits } : {}) })) };
+        }
+        throw new Error("SET inválido: usa identificadores únicos, SKU sin duplicar dentro del SET, cantidades enteras positivas, umbral exacto o mínimo y un beneficio válido.");
+      }
       if (Array.isArray(config.items) && config.items.length >= 2 && skus(config.items.map((i: any) => i?.sku)) && config.items.every((i: any) => positive(i.quantity) && benefit(i.benefit))) {
         return { kind: "KIT", items: config.items.map((i: any) => ({ sku: i.sku, quantity: i.quantity, benefit: i.benefit })) };
       }
@@ -31,7 +45,7 @@ export function validateDealConfig(value: unknown): DealConfig {
 
 export function dealSkus(config: DealConfig, ownSku: string): string[] {
   switch (config.kind) {
-    case "KIT": return config.items.map(item => item.sku);
+    case "KIT": return config.sets ? [...new Set(config.sets.flatMap(set => set.skus))] : config.items.map(item => item.sku);
     case "MIX_MATCH": return config.skus;
     case "BUY_GET": return [...new Set([...config.buySkus, ...config.getSkus])];
     default: return [ownSku];
@@ -40,10 +54,18 @@ export function dealSkus(config: DealConfig, ownSku: string): string[] {
 
 export function dealDescription(config: DealConfig): string {
   switch (config.kind) {
-    case "UNIT": return "Beneficio unitario importado";
+    case "UNIT": return "Precio especial por unidad";
     case "PACK": return `${config.quantity} unidades por C$${config.price.toFixed(2)}`;
-    case "KIT": return `Kit completo: ${config.items.map(item => `${item.quantity} × ${item.sku}`).join(", ")}`;
-    case "MIX_MATCH": return `${config.quantity} unidades mezcladas de ${config.skus.length} SKU elegibles`;
-    case "BUY_GET": return `Compra ${config.buyQuantity} unidades y recibe beneficio en hasta ${config.getQuantity} unidades de recompensa`;
+    case "KIT":
+      return config.sets
+        ? config.sets.map(set => {
+            const benefit = set.benefit
+              ? ` (${set.benefit.type === "PERCENT_OFF" ? `${set.benefit.value}% desc.` : `C$${set.benefit.value.toFixed(2)}`})`
+              : "";
+            return `SET ${set.id}: ${set.quantity} u. de SKU ${set.skus.join(", ")}${benefit}`;
+          }).join(" · ")
+        : "Kit pendiente de configurar";
+    case "MIX_MATCH": return `${config.quantity} unidades combinables de ${config.skus.length} SKU`;
+    case "BUY_GET": return `Compra ${config.buyQuantity} u. y recibe beneficio en ${config.getQuantity} u.`;
   }
 }

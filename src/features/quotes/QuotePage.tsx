@@ -267,9 +267,10 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
           <div className="quote-parameters">
             <QuoteDataField label="ID cliente" value={customer?.customerId} placeholder="Sin cliente" />
             <QuoteDataField label="Nombre cliente" value={customer?.displayName} placeholder="Seleccione cliente" />
-            <QuoteDataField label="Dirección" value={customer?.address} placeholder="Sin dirección" wide />
+            <QuoteDataField label="Correo" value={customer?.email} placeholder="Sin correo" />
             <QuoteDataField label="Teléfono" value={customer?.mobile} placeholder="Sin teléfono" />
             <QuoteDataField label="ID / Cédula" value={customer?.nationalId} placeholder="Sin ID" />
+            <QuoteDataField label="Dirección" value={customer?.address} placeholder="Sin dirección" wide />
             <QuoteDataField label="Segmento base" value={segment ? `Segmento ${segment}` : undefined} placeholder="Desde cliente" wide />
           </div>
         </CardContent>

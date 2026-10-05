@@ -1032,6 +1032,108 @@
   justify-content: flex-end;
   gap: .35rem;
 }
+
+.offer-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.offer-id-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--color-primary, #005baa);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.offer-promo-name {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--color-heading, #0f172a);
+  line-height: 1.25;
+  word-break: break-word;
+}
+
+.offer-deal-desc {
+  grid-column: 1 / -1;
+  color: var(--color-muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.kit-deal-requirements {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  background: rgba(248, 250, 252, 0.85);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.6rem;
+}
+
+.kit-deal-subtitle {
+  font-size: 0.69rem;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.kit-set-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.kit-set-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 0.73rem;
+  color: #334155;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+.kit-set-chip strong {
+  color: var(--color-heading, #0f172a);
+}
+
+.kit-chip-benefit {
+  color: #166534;
+  font-weight: 600;
+}
+
+.kit-deal-status {
+  grid-column: 1 / -1;
+  font-size: 0.74rem;
+  font-weight: 500;
+  padding: 1px 0;
+}
+
+.kit-status-applied {
+  color: #15803d;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.kit-status-pending {
+  color: #b45309;
+  font-weight: 600;
+}
+
+.kit-status-error {
+  color: #dc2626;
+  font-weight: 600;
+}
 .offer-row.disabled {
   opacity: 0.58;
   background: #f8fafc;

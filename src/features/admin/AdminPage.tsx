@@ -1,7 +1,12 @@
-import { Boxes, Database, Landmark, PackageSearch, Save, Search, SlidersHorizontal, Tags, Upload, UsersRound } from "lucide-react";
+import { isPendingKit } from "../../services/dealConfig";
+import { Boxes, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Database, Download, Filter, Landmark, PackageSearch, RefreshCw, Save, Search, SlidersHorizontal, Tags, Upload, UsersRound } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
+import { OfferConfigurationImport, downloadConfigurationTemplate } from "./OfferConfigurationImport";
+import { readOfferDetails } from "../../services/offerConfigurationStore";
+import { supabase } from "../../services/supabase";
+import { OfferSetEditor } from "./OfferSetEditor";
 import { DealEditor } from "./DealEditor";
 import { AppFeedback } from "../../components/AppFeedback";
 import { Badge, Button, Card, CardContent, Header, Metric } from "../../components/ui";
@@ -16,6 +21,7 @@ import {
 import { updateStoredDataStatus } from "../../services/dataStatus";
 import {
   loadRemoteDataMetrics,
+  loadOfferConfigurationMetrics,
   refreshRemoteDataStatuses,
   searchOfferConfigurations,
   syncCustomersToSupabase,
@@ -27,6 +33,7 @@ import {
   updateOfferSkuThresholdSetting,
   type OfferConfigurationFilters,
   type OfferConfigurationRow,
+  type OfferConfigurationMetrics,
   type PromotionSyncMode,
   type RemoteDataMetrics,
 } from "../../services/supabase";
@@ -51,9 +58,13 @@ export function AdminPage() {
   const [message, setMessage] = useState<string>();
   const [progress, setProgress] = useState<ProgressState | null>(null);
   const [syncMode, setSyncMode] = useState<PromotionSyncMode>("full");
-  const [offerConfigFilters, setOfferConfigFilters] = useState<OfferConfigurationFilters>({});
+  const [offerConfigFilters, setOfferConfigFilters] = useState<OfferConfigurationFilters>({ limit: 100 });
   const [offerConfigRows, setOfferConfigRows] = useState<OfferConfigurationRow[]>([]);
   const [offerConfigLoading, setOfferConfigLoading] = useState(false);
+  const [offerMetrics, setOfferMetrics] = useState<OfferConfigurationMetrics | null>(null);
+  const [offerMetricsLoading, setOfferMetricsLoading] = useState(false);
+  const [offerMetricsError, setOfferMetricsError] = useState("");
+  const [offerMetricsRefreshKey, setOfferMetricsRefreshKey] = useState(0);
   const [savingConfigKey, setSavingConfigKey] = useState("");
   const [remoteMetrics, setRemoteMetrics] = useState<RemoteDataMetrics>({
     promotions: null,
@@ -92,26 +103,53 @@ export function AdminPage() {
   }, [metricsRefreshKey]);
 
   useEffect(() => {
-    if (activeLoad !== "offer-settings" || offerConfigRows.length) return;
-    loadOfferConfigurationRows();
-  }, [activeLoad]);
+    if (activeLoad !== "offer-settings") return;
+    let active = true;
+    const controller = new AbortController();
+    setOfferMetricsLoading(true);
+    setOfferMetricsError("");
+    loadOfferConfigurationMetrics(controller.signal)
+      .then(metrics => { if (active) setOfferMetrics(metrics); })
+      .catch(error => { if (active) setOfferMetricsError(error instanceof Error ? error.message : "No se pudieron actualizar los totales de ofertas."); })
+      .finally(() => {
+        if (active) setOfferMetricsLoading(false);
+      });
+    return () => { active = false; controller.abort(); };
+  }, [activeLoad, offerMetricsRefreshKey]);
+
+  function refreshSavedOfferConfiguration() {
+    setOfferMetricsRefreshKey(key => key + 1);
+    if (offerConfigRows.length) void loadOfferConfigurationRows();
+  }
 
   async function loadOfferConfigurationRows() {
     setOfferConfigLoading(true);
-    const result = await searchOfferConfigurations(offerConfigFilters);
-    setOfferConfigLoading(false);
-
-    if (!result.ok) {
-      setMessage(result.message);
-      return;
+    try {
+      const result = await searchOfferConfigurations(offerConfigFilters);
+      if (!result.ok) {
+        setMessage(result.message);
+        return;
+      }
+      setOfferConfigRows(result.rows);
+      const isLimited = Boolean(offerConfigFilters.limit && result.rows.length >= offerConfigFilters.limit);
+      setMessage(
+        result.rows.length
+          ? `${result.rows.length} filas de oferta-SKU encontradas${isLimited ? ` (límite de ${offerConfigFilters.limit})` : ""}.`
+          : "No se encontraron ofertas con esos filtros."
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "No se pudieron cargar las configuraciones de ofertas.");
+    } finally {
+      setOfferConfigLoading(false);
     }
-
-    setOfferConfigRows(result.rows);
-    setMessage(result.rows.length ? `${result.rows.length} filas de oferta-SKU encontradas.` : "No se encontraron ofertas con esos filtros.");
   }
 
-  function updateOfferConfigFilter(key: keyof OfferConfigurationFilters, value: string) {
+  function updateOfferConfigFilter(key: keyof OfferConfigurationFilters, value: any) {
     setOfferConfigFilters((current) => ({ ...current, [key]: value }));
+  }
+
+  function clearOfferConfigFilters() {
+    setOfferConfigFilters({ promotionId: "", offerId: "", sku: "", limit: 100 });
   }
 
   function patchOfferConfigRow(ruleId: string, patch: Partial<OfferConfigurationRow>) {
@@ -139,12 +177,13 @@ export function AdminPage() {
     }
 
     setMessage(result.message);
+    setOfferMetricsRefreshKey(key => key + 1);
   }
 
   async function saveOfferThreshold(row: OfferConfigurationRow) {
     const key = `threshold-${row.ruleId}`;
     setSavingConfigKey(key);
-    const thresholdQuantity = Math.max(zeroThresholdAllowed(row.type) ? 0 : 1, Number(row.thresholdQuantity) || 0);
+    const thresholdQuantity = Math.max(row.globalDetails ? 1 : zeroThresholdAllowed(row.type) ? 0 : 1, Number(row.thresholdQuantity) || 0);
     const normalizedRow = {
       ...row,
       thresholdQuantity,
@@ -163,6 +202,7 @@ export function AdminPage() {
       thresholdType: normalizedRow.thresholdType,
     });
     setMessage(result.message);
+    if (row.globalDetails) await loadOfferConfigurationRows();
   }
 
   async function handlePromotionFile(file?: File) {
@@ -340,7 +380,7 @@ export function AdminPage() {
           <div className="load-shell">
             <div className="load-process-list" aria-label="Procesos de carga">
               <ProcessButton active={activeLoad === "promotions"} count={promotionRows.length} icon={Tags} label="Promociones" onClick={() => setActiveLoad("promotions")} />
-              <ProcessButton active={activeLoad === "offer-settings"} count={offerConfigRows.length} icon={SlidersHorizontal} label="Config. ofertas" onClick={() => setActiveLoad("offer-settings")} />
+              <ProcessButton active={activeLoad === "offer-settings"} count={offerConfigRows.length} icon={SlidersHorizontal} label="Config. ofertas" onClick={() => { setActiveLoad("offer-settings"); setOfferMetricsRefreshKey(key => key + 1); }} />
               <ProcessButton active={activeLoad === "customers"} count={customerRows.length} icon={UsersRound} label="Clientes" onClick={() => setActiveLoad("customers")} />
               <ProcessButton active={activeLoad === "catalog"} count={catalogRows.length} icon={PackageSearch} label="Catalogo" onClick={() => setActiveLoad("catalog")} />
               {inventoryFeatureEnabled ? (
@@ -369,10 +409,15 @@ export function AdminPage() {
                 <OfferConfigurationPanel
                   filters={offerConfigFilters}
                   loading={offerConfigLoading}
+                  metrics={offerMetrics}
+                  metricsLoading={offerMetricsLoading}
+                  metricsError={offerMetricsError}
                   rows={offerConfigRows}
                   savingKey={savingConfigKey}
                   onFilterChange={updateOfferConfigFilter}
                   onSearch={loadOfferConfigurationRows}
+                  onClear={clearOfferConfigFilters}
+                  onSaved={refreshSavedOfferConfiguration}
                   onStackingChange={saveOfferCombination}
                   onThresholdChange={patchOfferConfigRow}
                   onThresholdSave={saveOfferThreshold}
@@ -385,6 +430,7 @@ export function AdminPage() {
                   uniqueCustomers={uniqueCustomers}
                   uniqueSegments={customerSegments}
                   rowsWithPhone={customerRows.filter((row) => row.mobile).length}
+                  rowsWithEmail={customerRows.filter((row) => row.email).length}
                   preview={customerRows.slice(0, 20)}
                   onFile={handleCustomerFile}
                   onSync={syncCustomers}
@@ -517,60 +563,239 @@ function PromotionLoadPanel({
 function OfferConfigurationPanel({
   filters,
   loading,
+  metrics,
+  metricsLoading,
+  metricsError,
   rows,
   savingKey,
   onFilterChange,
   onSearch,
+  onClear,
+  onSaved,
   onStackingChange,
   onThresholdChange,
   onThresholdSave,
 }: {
   filters: OfferConfigurationFilters;
   loading: boolean;
+  metrics: OfferConfigurationMetrics | null;
+  metricsLoading: boolean;
+  metricsError: string;
   rows: OfferConfigurationRow[];
   savingKey: string;
-  onFilterChange: (key: keyof OfferConfigurationFilters, value: string) => void;
+  onFilterChange: (key: keyof OfferConfigurationFilters, value: any) => void;
   onSearch: () => void;
+  onClear?: () => void;
+  onSaved: () => void;
   onStackingChange: (row: OfferConfigurationRow, allowStacking: boolean) => void;
   onThresholdChange: (ruleId: string, patch: Partial<OfferConfigurationRow>) => void;
   onThresholdSave: (row: OfferConfigurationRow) => void;
 }) {
-  const uniqueOffers = new Set(rows.map((row) => `${row.promotionId}-${row.offerId}`)).size;
   const [editing, setEditing] = useState<OfferConfigurationRow | null>(null);
-  const combinableOffers = new Set(rows.filter((row) => row.allowStacking).map((row) => `${row.promotionId}-${row.offerId}`)).size;
+  const [editingOffer, setEditingOffer] = useState<string | null>(null);
+  const [exportMessage, setExportMessage] = useState("");
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(50);
+  const [clientFilter, setClientFilter] = useState("");
+  const pendingMetric = metricsLoading ? "…" : "—";
+
+  useEffect(() => {
+    setPage(0);
+  }, [rows]);
+
+  const filteredRows = useMemo(() => {
+    const term = clientFilter.trim().toLowerCase();
+    if (!term) return rows;
+    return rows.filter((row) =>
+      row.offerId.toLowerCase().includes(term) ||
+      row.sku.toLowerCase().includes(term) ||
+      row.promotionId.toLowerCase().includes(term) ||
+      row.promotionName.toLowerCase().includes(term) ||
+      row.segment.toLowerCase().includes(term)
+    );
+  }, [rows, clientFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  const currentPage = Math.min(page, totalPages - 1);
+  const paginatedRows = useMemo(() => {
+    return filteredRows.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
+  }, [filteredRows, currentPage, pageSize]);
 
   return (
     <LoadPanel
+      className="offer-load-panel"
       title="Configuración de ofertas"
-      subtitle="Complete los campos que no vienen en el reporte: combinación y threshold por oferta-SKU."
+      subtitle="Complete los campos que no vienen en el reporte: combinación, threshold por oferta-SKU y SET de los kits."
       actions={
-        <>
-          <label className="filter-field compact">
-            <span>ID promo</span>
-            <input value={filters.promotionId ?? ""} onChange={(event) => onFilterChange("promotionId", event.target.value)} placeholder="Ej. 1821" />
-          </label>
-          <label className="filter-field compact">
-            <span>ID oferta</span>
-            <input value={filters.offerId ?? ""} onChange={(event) => onFilterChange("offerId", event.target.value)} placeholder="Ej. 62010" />
-          </label>
-          <label className="filter-field compact">
-            <span>SKU</span>
-            <input value={filters.sku ?? ""} onChange={(event) => onFilterChange("sku", event.target.value)} placeholder="Código exacto" />
-          </label>
-          <Button onClick={onSearch} disabled={loading}>
-            <Search size={16} />
-            {loading ? "Buscando..." : "Buscar"}
+        <div className="offer-toolbar-actions">
+          <div className="offer-search-inputs">
+            <label className="filter-field compact">
+              <span>ID promo</span>
+              <input
+                value={filters.promotionId ?? ""}
+                onChange={(event) => onFilterChange("promotionId", event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") onSearch(); }}
+                placeholder="Ej. 1821"
+              />
+            </label>
+            <label className="filter-field compact">
+              <span>ID oferta</span>
+              <input
+                value={filters.offerId ?? ""}
+                onChange={(event) => onFilterChange("offerId", event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") onSearch(); }}
+                placeholder="Ej. 62010"
+              />
+            </label>
+            <label className="filter-field compact">
+              <span>SKU</span>
+              <input
+                value={filters.sku ?? ""}
+                onChange={(event) => onFilterChange("sku", event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") onSearch(); }}
+                placeholder="Código exacto"
+              />
+            </label>
+            <label className="filter-field compact">
+              <span>Límite</span>
+              <select
+                value={filters.limit ?? 100}
+                onChange={(event) => onFilterChange("limit", Number(event.target.value) || undefined)}
+              >
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+                <option value={250}>250</option>
+                <option value={500}>500</option>
+                <option value={0}>Todos</option>
+              </select>
+            </label>
+            <Button onClick={onSearch} disabled={loading}>
+              <Search size={16} />
+              {loading ? "Buscando..." : "Buscar"}
+            </Button>
+            {onClear ? (
+              <Button variant="outline" onClick={onClear} disabled={loading} title="Restablecer filtros">
+                <RefreshCw size={14} />
+                Limpiar
+              </Button>
+            ) : null}
+          </div>
+          <Button
+            variant="outline"
+            disabled={loading || !rows.length}
+            onClick={async () => {
+              if (!supabase) return;
+              try {
+                const details = await readOfferDetails(supabase, rows.map((row) => row.offerId));
+                await downloadConfigurationTemplate(details ?? []);
+                setExportMessage(details?.length ? "Plantilla de condiciones guardadas descargada." : "Sin condiciones globales guardadas; se descargó una plantilla vacía.");
+              } catch (error) {
+                setExportMessage(error instanceof Error ? error.message : "No se pudo exportar.");
+              }
+            }}
+          >
+            <Download size={16} />
+            Exportar condiciones guardadas
           </Button>
-        </>
+        </div>
       }
       summary={[
-        ["Ofertas", uniqueOffers],
-        ["Oferta-SKU", rows.length],
-        ["Combinables", combinableOffers],
+        ["Ofertas", metrics?.offers ?? pendingMetric],
+        ["Oferta-SKU", metrics?.offerSkus ?? pendingMetric],
+        ["Combinables", metrics?.combinable ?? pendingMetric],
       ]}
     >
-      {editing ? <DealEditor row={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); onSearch(); }} /> : null}
+      {metricsError ? <div className="offer-export-message" role="status">{metricsError}</div> : null}
+      <OfferConfigurationImport onSaved={onSaved} />
+      {exportMessage ? <div className="offer-export-message" role="status">{exportMessage}</div> : null}
+      {editingOffer ? <OfferSetEditor offerId={editingOffer} onClose={() => setEditingOffer(null)} onSaved={() => { setEditingOffer(null); onSaved(); }} /> : null}
+      {editing ? <DealEditor row={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); onSaved(); }} /> : null}
       <PreviewFrame title="Columnas pendientes de configurar">
+        {rows.length > 0 ? (
+          <div className="offer-table-toolbar">
+            <div className="offer-table-search">
+              <Filter size={15} />
+              <input
+                type="text"
+                placeholder="Filtrar en resultados (SKU, Oferta, Promo)..."
+                value={clientFilter}
+                onChange={(e) => {
+                  setClientFilter(e.target.value);
+                  setPage(0);
+                }}
+              />
+              {clientFilter ? (
+                <button
+                  type="button"
+                  className="clear-filter-btn"
+                  onClick={() => { setClientFilter(""); setPage(0); }}
+                  title="Limpiar filtro"
+                >
+                  ×
+                </button>
+              ) : null}
+            </div>
+            <div className="offer-table-pagination">
+              <span className="pagination-count">
+                {filteredRows.length === rows.length
+                  ? `Mostrando ${filteredRows.length ? currentPage * pageSize + 1 : 0}–${Math.min((currentPage + 1) * pageSize, filteredRows.length)} de ${rows.length}`
+                  : `Mostrando ${filteredRows.length ? currentPage * pageSize + 1 : 0}–${Math.min((currentPage + 1) * pageSize, filteredRows.length)} de ${filteredRows.length} filtrados (${rows.length} total)`}
+              </span>
+              <label className="pagination-size-label">
+                <span>Filas:</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value));
+                    setPage(0);
+                  }}
+                >
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                  <option value={200}>200</option>
+                </select>
+              </label>
+              <div className="pagination-buttons">
+                <Button
+                  variant="ghost"
+                  disabled={currentPage === 0}
+                  onClick={() => setPage(0)}
+                  title="Primera página"
+                >
+                  <ChevronsLeft size={16} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  disabled={currentPage === 0}
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  title="Página anterior"
+                >
+                  <ChevronLeft size={16} />
+                </Button>
+                <span className="pagination-page-indicator">
+                  {currentPage + 1} / {totalPages}
+                </span>
+                <Button
+                  variant="ghost"
+                  disabled={currentPage >= totalPages - 1}
+                  onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                  title="Página siguiente"
+                >
+                  <ChevronRight size={16} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  disabled={currentPage >= totalPages - 1}
+                  onClick={() => setPage(totalPages - 1)}
+                  title="Última página"
+                >
+                  <ChevronsRight size={16} />
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : null}
         <table className="settings-table">
           <thead>
             <tr>
@@ -578,20 +803,21 @@ function OfferConfigurationPanel({
               <th>Oferta</th>
               <th>SKU</th>
               <th>Tipo oferta</th>
+              <th>SET / condición</th>
               <th>Regla</th>
               <th>Segmento</th>
               <th>Combina</th>
-              <th>Threshold</th>
-              <th>Tipo threshold</th>
+              <th>Cantidad requerida</th>
+              <th>Tipo de umbral</th>
               <th>Valor</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => {
+            {paginatedRows.map((row) => {
               const combineKey = `combine-${row.promotionId}-${row.offerId}`;
               const thresholdKey = `threshold-${row.ruleId}`;
-              const minimumThreshold = zeroThresholdAllowed(row.type) ? 0 : 1;
+              const minimumThreshold = row.globalDetails ? 1 : zeroThresholdAllowed(row.type) ? 0 : 1;
               return (
                 <tr key={row.ruleId}>
                   <td>
@@ -602,12 +828,14 @@ function OfferConfigurationPanel({
                   <td>{row.offerId}</td>
                   <td>{row.sku}</td>
                   <td><Badge tone="info">{offerTypeLabel(row.type)}</Badge></td>
-                  <td><Button variant="outline" onClick={() => setEditing(row)}>{row.deal ? "Editar regla" : "Definir regla"}</Button></td>
+                  <td>{row.deal?.kind === "KIT" && row.deal.sets ? row.deal.sets.filter(set => set.skus.includes(row.sku)).map(set => <small key={set.id}>SET {set.id} · {set.quantity} · {set.thresholdType === "EXACT" ? "Exacto" : "Mínimo"}</small>) : row.type === "KIT_OFFER" ? "Pendiente" : "No kit"}</td>
+                  <td>{row.globalDetails ? row.type === "KIT_OFFER" ? <Button variant="outline" onClick={() => setEditingOffer(row.offerId)}>Configurar SET</Button> : <small>Guarde el umbral o cargue una plantilla.</small> : <Button variant="outline" onClick={() => setEditing(row)}>{row.deal ? "Editar regla anterior" : "Definir regla anterior"}</Button>}{isPendingKit(row) ? <small>Pendiente de configurar SET</small> : null}</td>
                   <td title={`Segmento almacenado: ${JSON.stringify(row.segment)}`}>{row.segment.trim() === "-" ? "Todos" : row.segment}</td>
                   <td>
                     <label className="inline-toggle">
                       <input
                         type="checkbox"
+                        aria-label={`Combinar oferta ${row.offerId}`}
                         checked={row.allowStacking}
                         disabled={savingKey === combineKey}
                         onChange={(event) => onStackingChange(row, event.target.checked)}
@@ -618,16 +846,20 @@ function OfferConfigurationPanel({
                   <td>
                     <input
                       type="number"
+                      aria-label={`Cantidad para oferta ${row.offerId}, SKU ${row.sku}`}
+                      step={row.globalDetails ? 1 : "any"}
                       min={minimumThreshold}
+                      disabled={row.type === "KIT_OFFER" || row.deal?.kind === "KIT"}
                       value={row.thresholdQuantity}
                       onChange={(event) => onThresholdChange(row.ruleId, { thresholdQuantity: Math.max(minimumThreshold, Number(event.target.value) || 0) })}
                     />
-                    <small>Reporte: {row.importedQuantity ?? "-"}</small>
+                    <small>{row.type === "KIT_OFFER" || row.deal?.kind === "KIT" ? "Configurar cantidades en cada SET" : `Reporte: ${row.importedQuantity ?? "-"}`}</small>
                   </td>
                   <td>
                     <select
-                      value={zeroThresholdAllowed(row.type) ? "MINIMUM" : row.thresholdType}
-                      disabled={zeroThresholdAllowed(row.type)}
+                      aria-label={`Umbral para oferta ${row.offerId}, SKU ${row.sku}`}
+                      value={!row.globalDetails && zeroThresholdAllowed(row.type) ? "MINIMUM" : row.thresholdType}
+                      disabled={(!row.globalDetails && zeroThresholdAllowed(row.type)) || row.type === "KIT_OFFER" || row.deal?.kind === "KIT"}
                       onChange={(event) => onThresholdChange(row.ruleId, { thresholdType: event.target.value as ThresholdType })}
                     >
                       <option value="EXACT">Exacta</option>
@@ -639,7 +871,7 @@ function OfferConfigurationPanel({
                     <Button
                       variant="outline"
                       onClick={() => onThresholdSave(row)}
-                      disabled={savingKey === thresholdKey}
+                      disabled={savingKey === thresholdKey || row.type === "KIT_OFFER" || row.deal?.kind === "KIT"}
                     >
                       <Save size={16} />
                       {savingKey === thresholdKey ? "Guardando" : "Guardar"}
@@ -648,9 +880,50 @@ function OfferConfigurationPanel({
                 </tr>
               );
             })}
-            {!rows.length ? <EmptyRow colSpan={11} label={loading ? "Buscando ofertas..." : "Busque por ID de promo u oferta para configurar."} /> : null}
+            {!rows.length ? <EmptyRow colSpan={12} label={loading ? "Buscando ofertas..." : "Busque por ID de promo u oferta para configurar."} /> : null}
+            {rows.length > 0 && filteredRows.length === 0 ? <EmptyRow colSpan={12} label="No hay filas que coincidan con el filtro en resultados." /> : null}
           </tbody>
         </table>
+        {totalPages > 1 ? (
+          <div className="offer-table-bottom-pagination">
+            <span className="pagination-count">
+              Página {currentPage + 1} de {totalPages} ({filteredRows.length} filas)
+            </span>
+            <div className="pagination-buttons">
+              <Button
+                variant="outline"
+                disabled={currentPage === 0}
+                onClick={() => setPage(0)}
+              >
+                Primera
+              </Button>
+              <Button
+                variant="outline"
+                disabled={currentPage === 0}
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+              >
+                Anterior
+              </Button>
+              <span className="pagination-page-indicator">
+                {currentPage + 1} / {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                disabled={currentPage >= totalPages - 1}
+                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+              >
+                Siguiente
+              </Button>
+              <Button
+                variant="outline"
+                disabled={currentPage >= totalPages - 1}
+                onClick={() => setPage(totalPages - 1)}
+              >
+                Última
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </PreviewFrame>
     </LoadPanel>
   );
@@ -681,6 +954,7 @@ function CustomerLoadPanel({
   uniqueCustomers,
   uniqueSegments,
   rowsWithPhone,
+  rowsWithEmail,
   preview,
   onFile,
   onSync,
@@ -689,6 +963,7 @@ function CustomerLoadPanel({
   uniqueCustomers: number;
   uniqueSegments: number;
   rowsWithPhone: number;
+  rowsWithEmail: number;
   preview: Customer[];
   onFile: (file?: File) => void;
   onSync: () => void;
@@ -696,27 +971,28 @@ function CustomerLoadPanel({
   return (
     <LoadPanel
       title="Clientes"
-      subtitle="Base usada por búsqueda y segmento base del cotizador."
+      subtitle="Base usada por búsqueda y segmento base del cotizador. Cada carga reemplaza la base completa de clientes."
       actions={<><UploadButton label="Cargar archivo" onFile={onFile} /><Button disabled={!rows.length} onClick={onSync}><Database size={16} />Actualizar clientes</Button></>}
       summary={[
         ["Clientes", uniqueCustomers],
         ["Segmentos", uniqueSegments],
-        ["Con telefono", rowsWithPhone],
+        ["Con correo", rowsWithEmail],
+        ["Con teléfono", rowsWithPhone],
       ]}
     >
       <PreviewFrame title="Clientes detectados">
         <table>
           <thead>
-            <tr><th>ID cliente</th><th>Nombre</th><th>Teléfono</th><th>ID / Cédula</th><th>Segmento</th><th>Dirección</th></tr>
+            <tr><th>ID cliente</th><th>Nombre</th><th>Correo</th><th>Teléfono</th><th>ID / Cédula</th><th>Segmento</th><th>Dirección</th></tr>
           </thead>
           <tbody>
             {preview.map((customer) => (
               <tr key={customer.customerId}>
-                <td>{customer.customerId}</td><td>{customer.displayName}</td><td>{customer.mobile ?? "-"}</td>
+                <td>{customer.customerId}</td><td>{customer.displayName}</td><td>{customer.email ?? "-"}</td><td>{customer.mobile ?? "-"}</td>
                 <td>{customer.nationalId ?? "-"}</td><td>{customer.segment || "-"}</td><td>{customer.address ?? "-"}</td>
               </tr>
             ))}
-            {!preview.length ? <EmptyRow colSpan={6} label="No hay clientes cargados." /> : null}
+            {!preview.length ? <EmptyRow colSpan={7} label="No hay clientes cargados." /> : null}
           </tbody>
         </table>
       </PreviewFrame>
@@ -859,18 +1135,20 @@ function StoresLoadPanel({
 function LoadPanel({
   actions,
   children,
+  className,
   subtitle,
   summary,
   title,
 }: {
   actions: ReactNode;
   children: ReactNode;
+  className?: string;
   subtitle: string;
   summary: Array<[string, string | number]>;
   title: string;
 }) {
   return (
-    <div className="load-panel">
+    <div className={`load-panel ${className ?? ""}`.trim()}>
       <div className="load-panel-head">
         <div>
           <h2>{title}</h2>
@@ -891,7 +1169,7 @@ function UploadButton({ label, onFile }: { label: string; onFile: (file?: File) 
     <label className="btn btn-outline file-btn">
       <Upload size={16} />
       {label}
-      <input type="file" accept=".xlsx,.csv,.tsv" onChange={(event) => onFile(event.target.files?.[0])} />
+      <input type="file" accept=".xlsx,.xlsb,.xls,.csv,.tsv" onChange={(event) => onFile(event.target.files?.[0])} />
     </label>
   );
 }

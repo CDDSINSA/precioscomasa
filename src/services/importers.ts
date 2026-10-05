@@ -1,6 +1,10 @@
 import type { Customer, ImportedPromotionRow, InventoryRecord, Product, QuoteItem, StoreLocation } from "../types/domain";
 
-type ParseMode = "inspect" | "quote" | "promotion" | "customer" | "catalog" | "inventory" | "store";
+type ParseMode = "inspect" | "quote" | "promotion" | "customer" | "catalog" | "inventory" | "store" | "offer-details";
+
+export function parseOfferConfigurationFile(file: File) {
+  return parseFileInWorker<import("./offerConfiguration").DetailImport>(file, "offer-details");
+}
 
 function toNumber(value: unknown) {
   if (value === null || value === undefined || value === "") return undefined;

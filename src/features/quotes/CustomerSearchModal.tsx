@@ -70,7 +70,7 @@ export function CustomerSearchModal({
               autoFocus
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Nombre, cédula o celular"
+              placeholder="Nombre, cédula, celular o correo"
             />
           </label>
 
@@ -82,6 +82,7 @@ export function CustomerSearchModal({
                   <span>ID cliente {customer.customerId}</span>
                 </div>
                 <div className="customer-result-meta">
+                  {customer.email ? <span>{customer.email}</span> : null}
                   <span>{customer.mobile || "Sin teléfono"}</span>
                   <span>{customer.nationalId || "Sin ID"}</span>
                   <span>Segmento {customer.segment || "-"}</span>

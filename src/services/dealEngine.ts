@@ -1,6 +1,8 @@
 import type { DealBenefit, DealConfig, OfferRule, Product, QuoteAllocation, QuoteItem } from "../types/domain";
 import { estimateUnitPrice, minimumQuantityForRule, ruleAppliesToSegment, ruleMatchesQuantity } from "./promotions";
-import { dealSkus, validateDealConfig } from "./dealConfig";
+import { dealSkus, isPendingKit, validateDealConfig } from "./dealConfig";
+
+import { enumerateKitSets } from "./kitSets";
 
 const EPS = 1e-8;
 const qty = (value: number) => Math.round(value * 1e6) / 1e6;
@@ -131,21 +133,19 @@ function benefitPrice(price: number, benefit: DealBenefit) {
   return benefit.type === "OVERRIDE_PRICE" ? benefit.value : price * (1 - benefit.value / 100);
 }
 
-function legacyConfig(rule: OfferRule, all: OfferRule[]): DealConfig | undefined {
-  if (rule.deal) return validateDealConfig(rule.deal);
-  if (rule.type === "KIT_OFFER") {
-    const items = all.filter(r => groupIdentity(r) === groupIdentity(rule) && r.type === "KIT_OFFER");
-    const bySku = new Map(items.map(r => [r.sku, r]));
-    if (bySku.size < 2) return undefined;
-    const hasConfiguredThreshold = items.some(r => typeof r.thresholdQuantity === "number" && r.thresholdQuantity > 0 && !!r.thresholdType);
-    if (bySku.size >= 4 && !hasConfiguredThreshold) return undefined;
-    return { kind: "KIT", items: [...bySku.values()].map(r => ({
-      sku: r.sku, quantity: Math.max(minimumQuantityForRule(r), r.minQuantity ?? 0, 1),
-      benefit: r.fixedPrice !== undefined && r.discountType !== "PERCENT_OFF"
-        ? { type: "OVERRIDE_PRICE", value: r.fixedPrice }
-        : { type: "PERCENT_OFF", value: r.discountPercent ?? 0 },
-    })) };
+function legacyConfig(rule: OfferRule): DealConfig | undefined {
+  if (isPendingKit(rule)) return undefined;
+  if (rule.repeatExact && rule.thresholdType === "EXACT") {
+    // Repeated closed groups; leftover units compete separately for other offers.
+    const quantity = rule.thresholdQuantity ?? 1;
+    const type = rule.discountType?.trim().toUpperCase();
+    const benefit: DealBenefit | undefined = type === "OVERRIDE_PRICE" || type === "PRICE_OVERRIDE" || (!type && rule.fixedPrice !== undefined)
+      ? { type: "OVERRIDE_PRICE", value: rule.fixedPrice! }
+      : rule.discountPercent !== undefined ? { type: "PERCENT_OFF", value: rule.discountPercent } : undefined;
+    if (!benefit) return undefined;
+    return { kind: "MIX_MATCH", skus: [rule.sku], quantity, benefit };
   }
+  if (rule.deal) return validateDealConfig(rule.deal);
   // Explicit RMS OVERRIDE_PRICE is always unit pricing. Only legacy untyped
   // FIXED_QTY_PRICE with a quantity > 1 implies a closed package.
   if (rule.type === "FIXED_QTY_PRICE" && !rule.discountType && rule.fixedPrice !== undefined && minimumQuantityForRule(rule) > 1) {
@@ -174,12 +174,15 @@ export function allocateBestDeals(items: QuoteItem[], catalog: Product[], rules:
   const units = new Map<string, OfferRule[]>();
   const groups = new Map<string, { rule: OfferRule; config: DealConfig }>();
   active.forEach(rule => {
-    const config = legacyConfig(rule, active);
+    // Exact one is equivalent to a unit rule for whole quantities; retain the
+    // unit path so compatible discounts still stack and large orders stay fast.
+    const config: DealConfig | undefined = rule.repeatExact && rule.thresholdType === "EXACT" && rule.thresholdQuantity === 1 && Number.isInteger(quantities.get(rule.sku))
+      ? { kind: "UNIT" } : legacyConfig(rule);
     if (!config) return; // A partial legacy kit is never an individual discount.
     if (config.kind === "UNIT") {
       units.set(rule.sku, [...(units.get(rule.sku) ?? []), rule]);
     } else {
-      const key = config.kind === "PACK" ? `${groupIdentity(rule)}|${rule.sku}` : groupIdentity(rule);
+      const key = config.kind === "PACK" || rule.repeatExact ? `${groupIdentity(rule)}|${rule.sku}` : groupIdentity(rule);
       if (!groups.has(key)) groups.set(key, { rule, config: validateDealConfig(config) });
     }
   });
@@ -204,7 +207,7 @@ export function allocateBestDeals(items: QuoteItem[], catalog: Product[], rules:
     const index = new Map(component.map((sku, i) => [sku, i]));
     const initial = component.map(sku => quantities.get(sku)!);
     const patterns: Pattern[] = [];
-    function append(rule: OfferRule, parts: { sku: string; quantity: number; benefit?: DealBenefit; role: Bucket["role"]; triggerDiscount?: boolean }[], expand = true) {
+    function append(rule: OfferRule, parts: { sku: string; quantity: number; benefit?: DealBenefit; role: Bucket["role"]; triggerDiscount?: boolean; kitSet?: string }[], expand = true) {
       limit();
       const consumption = component.map(() => 0);
       for (const part of parts) {
@@ -220,7 +223,7 @@ export function allocateBestDeals(items: QuoteItem[], catalog: Product[], rules:
           ? { price: base, offers: [rule] }
           : bestUnit(price, part.quantity, units.get(part.sku) ?? [], segment, rule, part.benefit);
         const total = money(pricing.price * part.quantity);
-        return { sku: part.sku, quantity: part.quantity, unitPrice: total / part.quantity, total, offers: pricing.offers, role: part.role };
+        return { sku: part.sku, quantity: part.quantity, unitPrice: total / part.quantity, total, offers: pricing.offers, role: part.role, ...(part.kitSet ? { kitSet: part.kitSet } : {}) };
       });
       patterns.push({ consumption, buckets, cost: money(buckets.reduce((sum, b) => sum + b.total, 0)), offers: uniqueOffers(buckets.flatMap(b => b.offers)) });
       if (patterns.length > (options.maxPatterns ?? 10000)) throw new Error("Demasiadas selecciones posibles en una promoción. Reduce los SKU relacionados para calcular el mejor precio exacto.");
@@ -253,7 +256,9 @@ export function allocateBestDeals(items: QuoteItem[], catalog: Product[], rules:
       if (!dealSkus(config, rule.sku).some(sku => index.has(sku))) continue;
       switch (config.kind) {
         case "PACK": append(rule, [{ sku: rule.sku, quantity: config.quantity, benefit: { type: "OVERRIDE_PRICE", value: config.price / config.quantity }, role: "bundle" }]); break;
-        case "KIT": append(rule, config.items.map(item => ({ ...item, role: "bundle" }))); break;
+        case "KIT":
+          if (config.sets) enumerateKitSets(config.sets, initial, index, selections, parts => append(rule, parts), limit);
+          break;
         case "MIX_MATCH":
           selections(config.skus, config.quantity, initial, chosen => append(rule, chosen.map(item => ({ ...item, benefit: config.benefit, role: "bundle" }))));
           break;
@@ -322,7 +327,7 @@ export function allocateBestDeals(items: QuoteItem[], catalog: Product[], rules:
     for (const sku of component) {
       const buckets = new Map<string, QuoteAllocation>();
       selected.filter(bucket => bucket.sku === sku).forEach(({ sku: _, ...bucket }) => {
-        const k = `${bucket.role}|${bucket.unitPrice}|${bucket.offers.map(groupIdentity).sort().join(",")}`;
+        const k = `${bucket.role}|${bucket.kitSet ?? ""}|${bucket.unitPrice}|${bucket.offers.map(groupIdentity).sort().join(",")}`;
         const prior = buckets.get(k);
         buckets.set(k, prior ? { ...prior, quantity: qty(prior.quantity + bucket.quantity), total: prior.total + bucket.total } : { ...bucket });
       });
@@ -341,7 +346,7 @@ export function allocationLines(allocations: QuoteAllocation[] = []): string[] {
       const displayQty = Number.isInteger(bucket.quantity)
         ? bucket.quantity
         : Number(bucket.quantity.toFixed(4));
-      return `${displayQty} u: ${
+      return `${displayQty} u${bucket.kitSet ? ` (SET ${bucket.kitSet})` : ""}: ${
         bucket.offers.length
           ? [...new Set(bucket.offers.map((r) => `${r.id} ${r.promotionName}`))].join(" + ")
           : "Precio regular"

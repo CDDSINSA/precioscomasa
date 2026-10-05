@@ -19,10 +19,21 @@ export type DealBenefit =
   | { type: "PERCENT_OFF"; value: number }
   | { type: "OVERRIDE_PRICE"; value: number };
 
+export type KitSet = {
+  id: string;
+  skus: string[];
+  quantity: number;
+  thresholdType: ThresholdType;
+  benefit?: DealBenefit;
+  skuBenefits?: Record<string, DealBenefit>;
+};
+
 export type DealConfig =
   | { kind: "UNIT" }
   | { kind: "PACK"; quantity: number; price: number }
-  | { kind: "KIT"; items: { sku: string; quantity: number; benefit: DealBenefit }[] }
+  | { kind: "KIT"; sets: KitSet[]; items?: never }
+  // Retain old saved definitions for review, but never apply them without SETs.
+  | { kind: "KIT"; items: { sku: string; quantity: number; benefit: DealBenefit }[]; sets?: never }
   | { kind: "MIX_MATCH"; skus: string[]; quantity: number; benefit: DealBenefit }
   | { kind: "BUY_GET"; buySkus: string[]; buyQuantity: number; getSkus: string[]; getQuantity: number; benefit: DealBenefit; discountTriggers: boolean };
 
@@ -92,8 +103,10 @@ export type OfferRule = {
   minQuantity?: number;
   thresholdQuantity?: number;
   thresholdType?: ThresholdType;
+  repeatExact?: boolean;
   allowStacking?: boolean;
   discountType?: string;
+  promotionAttribute?: string;
   configurationNote?: string;
   deal?: DealConfig;
 };
@@ -109,6 +122,7 @@ export type Customer = {
   lastName: string;
   orgName?: string;
   displayName: string;
+  email?: string;
   mobile?: string;
   nationalId?: string;
   segment: string;
@@ -128,6 +142,7 @@ export type QuoteLine = QuoteItem & {
 };
 
 export type QuoteAllocation = {
+  kitSet?: string;
   quantity: number;
   unitPrice: number;
   total: number;

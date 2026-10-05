@@ -1,7 +1,9 @@
 import { readSheet } from "read-excel-file/web-worker";
+import * as XLSX from "xlsx";
+import { parseOfferDetails } from "../services/offerConfiguration";
 import type { Customer, ImportedPromotionRow, InventoryRecord, OfferType, Product, QuoteItem, StoreLocation } from "../types/domain";
 
-type ParseMode = "inspect" | "quote" | "promotion" | "customer" | "catalog" | "inventory" | "store";
+type ParseMode = "inspect" | "quote" | "promotion" | "customer" | "catalog" | "inventory" | "store" | "offer-details";
 
 function normalizeHeader(value: unknown) {
   return String(value ?? "")
@@ -59,7 +61,25 @@ async function rowsFromFile(file: File) {
     return parseDelimited(text, extension === "tsv" ? "\t" : detectDelimiter(text));
   }
 
-  return tableToObjects(normalizeWorkbookRows(await readSheet(file) as unknown));
+  if (extension === "xlsb" || extension === "xls") {
+    const buffer = await file.arrayBuffer();
+    const workbook = XLSX.read(buffer, { type: "array" });
+    const firstSheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[firstSheetName];
+    const table = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" }) as unknown[][];
+    return tableToObjects(table);
+  }
+
+  try {
+    return tableToObjects(normalizeWorkbookRows((await readSheet(file)) as unknown));
+  } catch {
+    const buffer = await file.arrayBuffer();
+    const workbook = XLSX.read(buffer, { type: "array" });
+    const firstSheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[firstSheetName];
+    const table = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" }) as unknown[][];
+    return tableToObjects(table);
+  }
 }
 
 function normalizeWorkbookRows(data: unknown): unknown[][] {
@@ -124,7 +144,7 @@ function parseQuoteRows(rows: Record<string, unknown>[]): QuoteItem[] {
 function parsePromotionRows(rows: Record<string, unknown>[]): ImportedPromotionRow[] {
   const validTypes: OfferType[] = ["LINE_ITEM_DISCOUNT", "TIERED_DISCOUNT", "FIXED_QTY_PRICE", "KIT_OFFER"];
 
-  return rows.flatMap((row) => {
+  const parsed = rows.flatMap((row) => {
     const data = normalizeRow(row);
     const type = String(pick(data, ["tipo oferta"]) ?? "LINE_ITEM_DISCOUNT").trim().toUpperCase() as OfferType;
     if (!validTypes.includes(type)) return [];
@@ -132,6 +152,18 @@ function parsePromotionRows(rows: Record<string, unknown>[]): ImportedPromotionR
     const discountType = String(pick(data, ["tipo de descuento"]) ?? "").trim().toUpperCase();
     const detailAmount = toNumber(pick(data, ["detail change amount"]));
     const sellingUnitRetail = toNumber(pick(data, ["selling unit retail"]));
+
+    const attribute = String(
+      pick(data, [
+        "atributo promocion",
+        "atributo promoción",
+        "atributo de promocion",
+        "atributo de promoción",
+        "promotion attribute",
+        "atributo",
+        "attribute",
+      ]) ?? ""
+    ).trim();
 
     return {
       offerId: String(pick(data, ["id de oferta"]) ?? "").trim(),
@@ -149,9 +181,41 @@ function parsePromotionRows(rows: Record<string, unknown>[]): ImportedPromotionR
         : sellingUnitRetail,
       discountPercent: toNumber(pick(data, ["detail change percent"])),
       discountType,
+      attribute: attribute || undefined,
       segment: normalizeSegment(pick(data, ["segmento"])),
     };
   });
+
+  return filterPromotionRowsByAttribute(parsed);
+}
+
+function filterPromotionRowsByAttribute(rows: ImportedPromotionRow[]): ImportedPromotionRow[] {
+  const firstAttributeByGroup = new Map<string, string>();
+  const result: ImportedPromotionRow[] = [];
+
+  for (const row of rows) {
+    const groupKey = [
+      row.offerId.trim(),
+      row.promotionId.trim(),
+      row.sku.trim(),
+      row.segment.trim() || " - ",
+      row.quantity ?? 0,
+    ].join("|");
+
+    const currentAttr = (row.attribute ?? "").trim();
+
+    if (!firstAttributeByGroup.has(groupKey)) {
+      firstAttributeByGroup.set(groupKey, currentAttr);
+      result.push(row);
+    } else {
+      const firstAttr = firstAttributeByGroup.get(groupKey)!;
+      if (currentAttr === firstAttr) {
+        result.push(row);
+      }
+    }
+  }
+
+  return result;
 }
 
 function parseCustomerRows(rows: Record<string, unknown>[]): Customer[] {
@@ -159,14 +223,31 @@ function parseCustomerRows(rows: Record<string, unknown>[]): Customer[] {
     rows
       .map((row) => {
         const data = normalizeRow(row);
-        const customerId = String(pick(data, ["cust_id", "customer_id", "id cliente"]) ?? "").trim();
-        const firstName = String(pick(data, ["first_name", "nombre"]) ?? "").trim();
-        const lastName = String(pick(data, ["last_name", "apellido"]) ?? "").trim();
-        const orgName = String(pick(data, ["org_name", "organizacion", "empresa"]) ?? "").trim();
+        const customerId = cleanTextValue(
+          pick(data, ["cust_id", "customer_id", "id cliente", "id de cliente"]) ?? data["0"],
+        );
+        const fn1 = cleanTextValue(pick(data, ["first_name", "primer nombre", "nombre"]) ?? data["2"]);
+        const fn2 = cleanTextValue(pick(data, ["first_name2", "segundo nombre"]) ?? data["3"]);
+        const ln1 = cleanTextValue(pick(data, ["last_name", "primer apellido", "apellido"]) ?? data["4"]);
+        const ln2 = cleanTextValue(pick(data, ["last_name2", "segundo apellido"]) ?? data["5"]);
+
+        const firstName = [fn1, fn2].filter(Boolean).join(" ").trim();
+        const lastName = [ln1, ln2].filter(Boolean).join(" ").trim();
+        const orgName = cleanTextValue(pick(data, ["org_name", "organizacion", "empresa"]));
+        const email = cleanEmail(
+          pick(data, ["email_addr", "email", "correo", "correo electronico", "mail"]) ?? data["7"],
+        );
         const mobile = cleanPhone(pick(data, ["mobile", "celular", "telefono"]));
-        const nationalId = cleanNationalId(pick(data, ["customer_num", "cedula", "id"]));
-        const segment = normalizeSegment(pick(data, ["segmento"]));
-        const address = String(pick(data, ["municipo", "municipio", "direccion"]) ?? "").trim();
+        const nationalId = cleanNationalId(
+          pick(data, ["alt_cust_id", "customer_num", "cedula", "id", "identificacion id", "identificacion"]) ??
+            data["19"],
+        );
+        const segment = normalizeSegment(
+          pick(data, ["segmento", "id de segmento", "id segmento", "segment_id", "segment"]) ?? data["20"],
+        );
+        const address = cleanTextValue(
+          pick(data, ["address1", "municipo", "municipio", "direccion", "address"]) ?? data["9"],
+        );
         const displayName = orgName || [firstName, lastName].filter(Boolean).join(" ").trim() || customerId;
 
         return {
@@ -175,6 +256,7 @@ function parseCustomerRows(rows: Record<string, unknown>[]): Customer[] {
           lastName,
           orgName: orgName || undefined,
           displayName,
+          email: email || undefined,
           mobile: mobile || undefined,
           nationalId: nationalId || undefined,
           segment,
@@ -279,13 +361,24 @@ function withoutEmptyValues(customer: Customer) {
   }, {});
 }
 
-function cleanPhone(value: unknown) {
+function cleanTextValue(value: unknown) {
   const raw = String(value ?? "").trim();
+  if (!raw || raw.toUpperCase() === "NULL") return "";
+  return raw;
+}
+
+function cleanEmail(value: unknown) {
+  const raw = cleanTextValue(value).toLowerCase();
+  return raw.includes("@") ? raw : "";
+}
+
+function cleanPhone(value: unknown) {
+  const raw = cleanTextValue(value);
   return raw === "0" ? "" : raw;
 }
 
 function cleanNationalId(value: unknown) {
-  const raw = String(value ?? "").trim();
+  const raw = cleanTextValue(value);
   if (!raw || raw === "0") return "";
   return raw.includes("|") ? raw.split("|").pop()?.trim() ?? "" : raw;
 }
@@ -293,6 +386,26 @@ function cleanNationalId(value: unknown) {
 self.onmessage = async (event: MessageEvent<{ id: string; file: File; mode: ParseMode }>) => {
   const { id, file, mode } = event.data;
   try {
+    if (mode === "offer-details") {
+      if (file.size > 10 * 1024 * 1024) throw new Error("El archivo no debe superar 10 MB.");
+      const extension = file.name.split(".").pop()?.toLowerCase();
+      if (!["xlsx", "xls", "xlsb", "csv", "tsv"].includes(extension ?? "")) throw new Error("Seleccione un archivo Excel, CSV o TSV.");
+      const workbook = extension === "csv" || extension === "tsv"
+        ? XLSX.read(await file.text(), { type: "string", raw: true })
+        : XLSX.read(await file.arrayBuffer(), { type: "array" });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const table = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: "", raw: false });
+      // Preserve formatted IDs (e.g. 000123), but read numeric quantities without
+      // display separators such as 18,000 or 18.000 from Excel cell formatting.
+      const rawTable = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: "", raw: true });
+      const quantityColumn = table[0]?.findIndex(cell => normalizeHeader(cell) === "cantidad") ?? -1;
+      if (quantityColumn > 0) table.slice(1).forEach((row, index) => {
+        const quantity = rawTable[index + 1]?.[quantityColumn];
+        if (typeof quantity === "number") row[quantityColumn] = quantity;
+      });
+      self.postMessage({ id, ok: true, result: parseOfferDetails(table) });
+      return;
+    }
     const rows = await rowsFromFile(file);
     const result =
       mode === "inspect"
