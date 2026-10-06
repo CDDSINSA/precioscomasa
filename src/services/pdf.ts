@@ -1,3 +1,4 @@
+import { jsPDF } from "jspdf";
 import comasaLogo from "../assets/logo-comasa.png";
 import type { Customer, QuoteSummary } from "../types/domain";
 import { formatCurrency } from "./quote";
@@ -15,7 +16,6 @@ type ExportQuotePdfOptions = {
 
 export async function exportQuotePdf(summary: QuoteSummary, options: ExportQuotePdfOptions) {
   if (summary.pricingError) throw new Error(summary.pricingError);
-  const { jsPDF } = await import("jspdf");
   const doc = new jsPDF({ unit: "pt", format: "letter" });
   const page = { width: 612, height: 792 };
   const margin = 38;
