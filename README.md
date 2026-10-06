@@ -4,7 +4,7 @@ Aplicacion web para administrar promociones de tienda 5 COMASA y calcular cotiza
 
 ## Estado de esta documentación
 
-Actualizada el 5 de octubre de 2026 a partir del código local. Describe la implementación de kits por SET. No certifica el estado instalado en Supabase ni el despliegue en Vercel. No se ha implementado en esta actualización un repositorio Git, un registro de migraciones ni una auditoría remota.
+Actualizada el 6 de octubre de 2026 a partir del código local. Describe la implementación de kits por SET y el filtro de segmentos en la carga de clientes. No certifica el estado instalado en Supabase ni el despliegue en Vercel. No se ha implementado en esta actualización un repositorio Git, un registro de migraciones ni una auditoría remota.
 
 Referencias:
 
@@ -46,6 +46,12 @@ El centro de carga permite actualizar datos por proceso. Clientes, catalogo, inv
 
 Desde Administracion se puede cargar el reporte de clientes y usar `Actualizar clientes` para reemplazar la base completa en Supabase. El usuario debe tener rol `admin`.
 
+Solo se admiten los segmentos **1104, 1103, 1002, 1003, 1102 y 1105**. Se excluyen los demás, incluido 1001, los vacíos y los desconocidos. La normalización de segmentos del reporte se mantiene (por ejemplo, `COMASA 1104` se interpreta como `1104`). Después de consolidar duplicados con la lógica existente, se aplica el filtro: prevalece el segmento del registro consolidado. Los contadores de aceptados y excluidos representan clientes consolidados, no filas originales.
+
+La vista previa y sus métricas incluyen solo clientes aceptados. El mensaje de carga informa aceptados y excluidos; si no hay aceptados, se deshabilita la actualización. Una lectura fallida descarta la selección anterior. La sincronización vuelve a validar el filtro antes de limpiar la tabla y rechaza cargas sin clientes permitidos. Al actualizar, también desaparecen los clientes existentes de segmentos excluidos. Se conserva el reemplazo por lotes actual; no es una operación atómica y un fallo de inserción puede dejar una carga parcial.
+
+La regla compartida está en `src/services/customerSegments.mjs`, con declaraciones TypeScript en `customerSegments.d.mts`. La usan `importers.ts`, la sincronización en `supabase.ts` y el script local. Este cambio no requiere migraciones SQL ni modifica las reglas de promociones o cotización.
+
 Tambien queda disponible el script local:
 
 1. Comprobar que exista la tabla `customers` con los campos requeridos por el script; su definición está en `supabase/schema.sql`.
@@ -53,7 +59,7 @@ Tambien queda disponible el script local:
 3. Definir `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` en la terminal local.
 4. Ejecutar `npm run sync:customers -- "C:/ruta/Clientes Estadisticas de Compras sep26.xlsx"`.
 
-El script reemplaza totalmente la tabla `customers`: primero elimina los clientes actuales y despues carga todos los clientes validos del Excel.
+El script aplica el mismo filtro y reemplaza totalmente la tabla `customers`: primero elimina los clientes actuales y después carga los clientes válidos de los seis segmentos permitidos. Si ninguno cumple, termina antes de modificar Supabase. `--dry-run` informa el resultado sin escribir en la base.
 
 ## Variables en Vercel
 
@@ -83,6 +89,7 @@ Al crear usuarios en Supabase Auth, asignar el rol en `app_profiles.role`. Si el
 - `src/services/dealSettings.ts`: lectura y escritura de configuración adicional, independiente del reporte.
 - `src/features/admin/DealEditor.tsx` y `KitSetFields.tsx`: editor de modalidades y SET con los estilos existentes.
 - `scripts/promotions.test.mjs`: pruebas del motor y regresiones.
+- `scripts/customerSegments.test.mjs`: filtro de clientes, consolidación de duplicados, bloqueo antes del borrado y carga Excel en modo `--dry-run`.
 - `supabase/schema.sql`: estructura inicial de base de datos.
 
 ## Configuración adicional de kits
@@ -115,7 +122,7 @@ Los SET usan la columna JSON `promotion_deal_configs.config`: el cambio de la ap
 
 ## Verificación local
 
-- `npm test`: pruebas del motor y persistencia simulada.
+- `npm test`: pruebas del motor, persistencia simulada y filtro de segmentos de clientes.
 - `npm run build`: comprobación TypeScript y compilación de producción.
 
 La implementación local de SET fue verificada con 64 pruebas aprobadas y compilación correcta. Ese resultado no confirma migraciones remotas, permisos efectivos ni despliegues.

@@ -1,4 +1,5 @@
 import { isPendingKit } from "../../services/dealConfig";
+import { CUSTOMER_SEGMENTS_LABEL, customerImportMessage } from "../../services/customerSegments.mjs";
 import { Boxes, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Database, Download, Filter, Landmark, PackageSearch, RefreshCw, Save, Search, SlidersHorizontal, Tags, Upload, UsersRound } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
@@ -13,7 +14,7 @@ import { Badge, Button, Card, CardContent, Header, Metric } from "../../componen
 import { inventoryFeatureEnabled, inventoryStoreId } from "../../config/features";
 import {
   parseCatalogFile,
-  parseCustomerFile,
+  parseCustomerImport,
   parseInventoryFile,
   parsePromotionFile,
   parseStoreFile,
@@ -227,11 +228,12 @@ export function AdminPage() {
     setActiveLoad("customers");
     setProgress({ title: "Leyendo clientes", detail: file.name, current: 0, total: 1 });
     try {
-      const parsedRows = await parseCustomerFile(file);
+      const { accepted: parsedRows, excluded } = await parseCustomerImport(file);
       setCustomerRows(parsedRows);
       updateStoredDataStatus("customers", parsedRows.length ? "ok" : "error", `${parsedRows.length} clientes`);
-      setMessage(`Archivo de clientes cargado: ${parsedRows.length} clientes detectados.`);
+      setMessage(customerImportMessage(parsedRows.length, excluded));
     } catch (error) {
+      setCustomerRows([]);
       updateStoredDataStatus("customers", "error", "No cargado");
       setMessage(error instanceof Error ? error.message : "No se pudo cargar el archivo de clientes.");
     } finally {
@@ -971,7 +973,7 @@ function CustomerLoadPanel({
   return (
     <LoadPanel
       title="Clientes"
-      subtitle="Base usada por búsqueda y segmento base del cotizador. Cada carga reemplaza la base completa de clientes."
+      subtitle={`Base usada por búsqueda y segmento base del cotizador. Solo segmentos ${CUSTOMER_SEGMENTS_LABEL}. Cada carga reemplaza la base completa de clientes.`}
       actions={<><UploadButton label="Cargar archivo" onFile={onFile} /><Button disabled={!rows.length} onClick={onSync}><Database size={16} />Actualizar clientes</Button></>}
       summary={[
         ["Clientes", uniqueCustomers],

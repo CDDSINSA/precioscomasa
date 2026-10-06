@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import fs from "fs";
 import * as XLSX from "xlsx";
+import { selectCustomerSegments, NO_ALLOWED_CUSTOMERS, customerImportMessage } from "../src/services/customerSegments.mjs";
 
 const DEFAULT_FILE = "documentos/Nueva_Estructura_Data_Cliente.xlsb";
 const args = process.argv.slice(2);
@@ -38,14 +39,16 @@ if (headerIndex < 0) {
 const headers = rawRows[headerIndex].map(normalize);
 const bodyRows = rawRows.slice(headerIndex + 1);
 
-const customers = deduplicateCustomers(
+const uniqueCustomers = deduplicateCustomers(
   bodyRows
     .map((row) => rowToCustomer(row, headers))
     .filter((customer) => customer.customer_id && customer.display_name),
 );
+const { accepted: customers, excluded } = selectCustomerSegments(uniqueCustomers);
+console.log(customerImportMessage(customers.length, excluded));
 
 if (!customers.length) {
-  console.error("No hay clientes validos para cargar. No se modifico Supabase.");
+  console.error(NO_ALLOWED_CUSTOMERS);
   process.exit(1);
 }
 

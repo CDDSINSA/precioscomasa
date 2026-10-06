@@ -1,4 +1,5 @@
 import type { Customer, ImportedPromotionRow, InventoryRecord, Product, QuoteItem, StoreLocation } from "../types/domain";
+import { selectCustomerSegments } from "./customerSegments.mjs";
 
 type ParseMode = "inspect" | "quote" | "promotion" | "customer" | "catalog" | "inventory" | "store" | "offer-details";
 
@@ -89,7 +90,11 @@ export async function parsePromotionFile(file: File): Promise<ImportedPromotionR
 }
 
 export async function parseCustomerFile(file: File): Promise<Customer[]> {
-  return parseFileInWorker<Customer[]>(file, "customer");
+  return (await parseCustomerImport(file)).accepted;
+}
+
+export async function parseCustomerImport(file: File) {
+  return selectCustomerSegments(await parseFileInWorker<Customer[]>(file, "customer"));
 }
 
 export async function parseCatalogFile(file: File): Promise<Product[]> {

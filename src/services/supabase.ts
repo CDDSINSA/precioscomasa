@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { selectCustomerSegments, NO_ALLOWED_CUSTOMERS } from "./customerSegments.mjs";
 import { inventoryFeatureEnabled, inventoryStoreId } from "../config/features";
 import type {
   AdminQuote,
@@ -712,9 +713,11 @@ export async function syncCustomersToSupabase(
     return { ok: false, message: "Supabase no esta configurado en este entorno." };
   }
 
-  const validCustomers = deduplicateCustomers(customers.filter((customer) => customer.customerId && customer.displayName));
+  const identifiedCustomers = customers.filter((customer) => customer.customerId && customer.displayName);
+  const uniqueCustomers = deduplicateCustomers(identifiedCustomers);
+  const { accepted: validCustomers, excluded } = selectCustomerSegments(uniqueCustomers);
   if (!validCustomers.length) {
-    return { ok: false, message: "No hay clientes validos para sincronizar." };
+    return { ok: false, message: NO_ALLOWED_CUSTOMERS };
   }
 
   onProgress?.(0, validCustomers.length, "Limpiando clientes anteriores");
@@ -726,11 +729,12 @@ export async function syncCustomersToSupabase(
   );
   if (!uploaded.ok) return uploaded;
 
-  const duplicates = customers.filter((customer) => customer.customerId && customer.displayName).length - validCustomers.length;
+  const duplicates = identifiedCustomers.length - uniqueCustomers.length;
   return {
     ok: true,
     message:
       `Sincronización de clientes completada: ${validCustomers.length} clientes publicados.` +
+      (excluded ? ` ${excluded} clientes excluidos por segmento.` : "") +
       (duplicates ? ` ${duplicates} duplicados consolidados.` : ""),
   };
 }
