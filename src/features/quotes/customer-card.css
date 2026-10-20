@@ -1,0 +1,46 @@
+.quote-customer-card {
+  min-width: 0;
+  padding: .85rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: .95rem;
+  background: var(--color-surface);
+}
+
+.quote-customer-summary { display: flex; align-items: center; gap: .85rem; }
+.quote-customer-avatar {
+  display: grid;
+  place-items: center;
+  flex: 0 0 2.6rem;
+  height: 2.6rem;
+  border-radius: .8rem;
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+.quote-customer-info { display: grid; flex: 1; min-width: 0; gap: .25rem; }
+.quote-customer-label { color: var(--color-muted); font-size: .72rem; }
+.quote-customer-identity { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .65rem; }
+.quote-customer-identity strong { color: var(--color-heading); font-size: .95rem; overflow-wrap: anywhere; }
+.quote-customer-segment {
+  padding: .2rem .55rem;
+  border-radius: 999px;
+  color: var(--color-primary-dark);
+  background: var(--color-primary-soft);
+  font-size: .75rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.quote-customer-contact { display: flex; align-items: center; gap: .35rem; color: var(--color-muted); font-size: .8rem; overflow-wrap: anywhere; }
+.quote-customer-contact svg { flex-shrink: 0; }
+.quote-customer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.quote-customer-details { margin-top: .5rem; }
+.quote-customer-details summary { width: fit-content; color: var(--color-primary); font-size: .75rem; cursor: pointer; }
+.quote-customer-details summary:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; border-radius: .2rem; }
+.quote-customer-details dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem 1rem; margin: .75rem 0 0; padding-top: .75rem; border-top: 1px solid var(--color-border); }
+.quote-customer-details dt { color: var(--color-muted); font-size: .72rem; }
+.quote-customer-details dd { margin: .2rem 0 0; color: var(--color-heading); font-size: .8rem; overflow-wrap: anywhere; }
+
+@media (max-width: 640px) {
+  .quote-customer-summary { flex-wrap: wrap; gap: .65rem; }
+  .quote-customer-actions { width: 100%; }
+  .quote-customer-details dl { grid-template-columns: 1fr; }
+}

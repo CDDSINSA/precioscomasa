@@ -8,6 +8,7 @@ import { OfferConfigurationImport, downloadConfigurationTemplate } from "./Offer
 import { readOfferDetails } from "../../services/offerConfigurationStore";
 import { supabase } from "../../services/supabase";
 import { OfferSetEditor } from "./OfferSetEditor";
+import { SimpleOfferEditor } from "./SimpleOfferEditor";
 import { DealEditor } from "./DealEditor";
 import { AppFeedback } from "../../components/AppFeedback";
 import { Badge, Button, Card, CardContent, Header, Metric } from "../../components/ui";
@@ -595,6 +596,7 @@ function OfferConfigurationPanel({
 }) {
   const [editing, setEditing] = useState<OfferConfigurationRow | null>(null);
   const [editingOffer, setEditingOffer] = useState<string | null>(null);
+  const [editingSimple, setEditingSimple] = useState<OfferConfigurationRow | null>(null);
   const [exportMessage, setExportMessage] = useState("");
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(50);
@@ -627,7 +629,7 @@ function OfferConfigurationPanel({
     <LoadPanel
       className="offer-load-panel"
       title="Configuración de ofertas"
-      subtitle="Complete los campos que no vienen en el reporte: combinación, threshold por oferta-SKU y SET de los kits."
+      subtitle="Configure condiciones y SET, o edite beneficios y productos de ofertas simples."
       actions={
         <div className="offer-toolbar-actions">
           <div className="offer-search-inputs">
@@ -711,8 +713,9 @@ function OfferConfigurationPanel({
       <OfferConfigurationImport onSaved={onSaved} />
       {exportMessage ? <div className="offer-export-message" role="status">{exportMessage}</div> : null}
       {editingOffer ? <OfferSetEditor offerId={editingOffer} onClose={() => setEditingOffer(null)} onSaved={() => { setEditingOffer(null); onSaved(); }} /> : null}
+      {editingSimple ? <SimpleOfferEditor row={editingSimple} onClose={() => setEditingSimple(null)} onSaved={() => { setEditingSimple(null); setExportMessage("Oferta actualizada. La próxima carga del reporte reemplazará estos cambios si incluye esta promoción."); onSaved(); }} /> : null}
       {editing ? <DealEditor row={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); onSaved(); }} /> : null}
-      <PreviewFrame title="Columnas pendientes de configurar">
+      <PreviewFrame title="Ofertas y condiciones" scrollable={false}>
         {rows.length > 0 ? (
           <div className="offer-table-toolbar">
             <div className="offer-table-search">
@@ -798,21 +801,22 @@ function OfferConfigurationPanel({
             </div>
           </div>
         ) : null}
-        <table className="settings-table">
+        <div className="table-wrap offer-table-scroll" role="region" aria-label="Ofertas y condiciones: tabla desplazable" tabIndex={0}>
+        <table className="settings-table offer-settings-table">
           <thead>
             <tr>
-              <th>Promo</th>
-              <th>Oferta</th>
-              <th>SKU</th>
-              <th>Tipo oferta</th>
-              <th>SET / condición</th>
-              <th>Regla</th>
-              <th>Segmento</th>
-              <th>Combina</th>
-              <th>Cantidad requerida</th>
-              <th>Tipo de umbral</th>
-              <th>Valor</th>
-              <th></th>
+              <th scope="col" className="offer-action-cell">Acción</th>
+              <th scope="col">Promoción</th>
+              <th scope="col">Oferta</th>
+              <th scope="col">SKU</th>
+              <th scope="col">Tipo de oferta</th>
+              <th scope="col">Segmento</th>
+              <th scope="col" className="offer-benefit-cell">Beneficio</th>
+              <th scope="col">Configuración / SET</th>
+              <th scope="col">Combina</th>
+              <th scope="col">Cantidad requerida</th>
+              <th scope="col">Umbral</th>
+              <th scope="col">Guardar condición</th>
             </tr>
           </thead>
           <tbody>
@@ -822,17 +826,26 @@ function OfferConfigurationPanel({
               const minimumThreshold = row.globalDetails ? 1 : zeroThresholdAllowed(row.type) ? 0 : 1;
               return (
                 <tr key={row.ruleId}>
-                  <td>
+                  <td className="offer-action-cell">
+                    {row.type !== "KIT_OFFER" && (!row.deal || row.deal.kind === "UNIT") ? <Button variant="outline" onClick={() => setEditingSimple(row)} aria-label={`Editar oferta ${row.offerId}, promoción ${row.promotionId}, segmento ${row.segment.trim() === "-" ? "Todos" : row.segment}`}>Editar oferta</Button> : <small>Ver configuración</small>}
+                  </td>
+                  <td className="offer-promotion-cell">
                     <strong>{row.promotionId}</strong>
-                    <span>{row.promotionName}</span>
+                    <span title={row.promotionName}>{row.promotionName}</span>
                     <span>{row.startsAt ?? "Sin inicio"} — {row.endsAt ?? "Sin vencimiento"}</span>
                   </td>
                   <td>{row.offerId}</td>
                   <td>{row.sku}</td>
                   <td><Badge tone="info">{offerTypeLabel(row.type)}</Badge></td>
-                  <td>{row.deal?.kind === "KIT" && row.deal.sets ? row.deal.sets.filter(set => set.skus.includes(row.sku)).map(set => <small key={set.id}>SET {set.id} · {set.quantity} · {set.thresholdType === "EXACT" ? "Exacto" : "Mínimo"}</small>) : row.type === "KIT_OFFER" ? "Pendiente" : "No kit"}</td>
-                  <td>{row.globalDetails ? row.type === "KIT_OFFER" ? <Button variant="outline" onClick={() => setEditingOffer(row.offerId)}>Configurar SET</Button> : <small>Guarde el umbral o cargue una plantilla.</small> : <Button variant="outline" onClick={() => setEditing(row)}>{row.deal ? "Editar regla anterior" : "Definir regla anterior"}</Button>}{isPendingKit(row) ? <small>Pendiente de configurar SET</small> : null}</td>
                   <td title={`Segmento almacenado: ${JSON.stringify(row.segment)}`}>{row.segment.trim() === "-" ? "Todos" : row.segment}</td>
+                  <td className="offer-benefit-cell"><strong>{offerValueLabel(row)}</strong></td>
+                  <td className="offer-condition-cell">
+                    <div className="offer-condition-content">
+                      {row.deal?.kind === "KIT" && row.deal.sets ? row.deal.sets.filter(set => set.skus.includes(row.sku)).map(set => <small key={set.id}>SET {set.id} · {set.quantity} · {set.thresholdType === "EXACT" ? "Exacto" : "Mínimo"}</small>) : null}
+                      {row.globalDetails ? row.type === "KIT_OFFER" ? <Button variant="outline" onClick={() => setEditingOffer(row.offerId)}>Configurar SET</Button> : <small>Por cantidad y umbral</small> : <Button variant="outline" onClick={() => setEditing(row)}>{row.deal ? "Editar regla anterior" : "Definir regla anterior"}</Button>}
+                      {isPendingKit(row) ? <small className="offer-pending-note">Pendiente de configurar SET</small> : null}
+                    </div>
+                  </td>
                   <td>
                     <label className="inline-toggle">
                       <input
@@ -845,7 +858,7 @@ function OfferConfigurationPanel({
                       <span>{row.allowStacking ? "Sí" : "No"}</span>
                     </label>
                   </td>
-                  <td>
+                  <td className="offer-quantity-cell">
                     <input
                       type="number"
                       aria-label={`Cantidad para oferta ${row.offerId}, SKU ${row.sku}`}
@@ -857,7 +870,7 @@ function OfferConfigurationPanel({
                     />
                     <small>{row.type === "KIT_OFFER" || row.deal?.kind === "KIT" ? "Configurar cantidades en cada SET" : `Reporte: ${row.importedQuantity ?? "-"}`}</small>
                   </td>
-                  <td>
+                  <td className="offer-threshold-cell">
                     <select
                       aria-label={`Umbral para oferta ${row.offerId}, SKU ${row.sku}`}
                       value={!row.globalDetails && zeroThresholdAllowed(row.type) ? "MINIMUM" : row.thresholdType}
@@ -868,10 +881,10 @@ function OfferConfigurationPanel({
                       <option value="MINIMUM">Mínima</option>
                     </select>
                   </td>
-                  <td>{offerValueLabel(row)}</td>
-                  <td>
+                  <td className="offer-save-cell">
                     <Button
                       variant="outline"
+                      aria-label={`Guardar condición de oferta ${row.offerId}, SKU ${row.sku}`}
                       onClick={() => onThresholdSave(row)}
                       disabled={savingKey === thresholdKey || row.type === "KIT_OFFER" || row.deal?.kind === "KIT"}
                     >
@@ -886,6 +899,7 @@ function OfferConfigurationPanel({
             {rows.length > 0 && filteredRows.length === 0 ? <EmptyRow colSpan={12} label="No hay filas que coincidan con el filtro en resultados." /> : null}
           </tbody>
         </table>
+        </div>
         {totalPages > 1 ? (
           <div className="offer-table-bottom-pagination">
             <span className="pagination-count">
@@ -1185,11 +1199,11 @@ function SummaryTile({ label, value }: { label: string; value: string }) {
   );
 }
 
-function PreviewFrame({ children, title }: { children: ReactNode; title: string }) {
+function PreviewFrame({ children, title, scrollable = true }: { children: ReactNode; title: string; scrollable?: boolean }) {
   return (
     <div className="preview-frame">
       <div className="preview-head"><h3>{title}</h3></div>
-      <div className="table-wrap">{children}</div>
+      {scrollable ? <div className="table-wrap">{children}</div> : children}
     </div>
   );
 }

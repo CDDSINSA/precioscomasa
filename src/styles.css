@@ -567,62 +567,142 @@ tbody tr:hover { background: var(--color-primary-soft); }
   display: grid;
   align-content: center;
   justify-items: center;
-  gap: 1.75rem;
-  padding: 1rem 0 2rem;
+  gap: 2.25rem;
+  padding: 1.5rem 0 2.5rem;
 }
 
 .home-head {
   display: grid;
   justify-items: center;
+  gap: 1.1rem;
   width: min(54rem, 100%);
   text-align: center;
 }
 
-.home-head h1 {
-  font-size: 2.65rem;
-  line-height: 3rem;
-  font-weight: 700;
-}
-
-.home-brand-line {
+.home-logo-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: .85rem;
-  margin-top: .8rem;
-  padding: .35rem .9rem;
-  border: 1px solid rgba(0, 91, 170, .12);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, .7);
-  box-shadow: 0 12px 26px rgba(15, 23, 42, .05);
+  padding: .65rem 1.35rem;
+  border: 1px solid rgba(0, 91, 170, .14);
+  border-radius: 1.15rem;
+  background: #ffffff;
+  box-shadow: 0 10px 26px rgba(0, 63, 125, .08);
 }
 
 .home-logo {
-  width: 12.5rem;
-  height: 4rem;
+  width: 9.5rem;
+  height: 4.25rem;
   object-fit: contain;
 }
 
-.home-brand-line span {
+.home-head h1 {
+  display: grid;
+  gap: .2rem;
+  max-width: 28rem;
   color: var(--color-primary-dark);
-  font-family: var(--font-heading);
-  font-size: 1.45rem;
-  font-weight: 750;
+  font-size: 1.35rem;
+  line-height: 1.75rem;
+  font-weight: 700;
 }
 
-.home-head p {
-  max-width: 38rem;
-  margin: 1rem 0 0;
+.home-head h1 span {
+  color: var(--color-primary-dark);
+  font-size: 1.12rem;
+  line-height: 1.55rem;
+  font-weight: 650;
+}
+
+.home-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(15rem, 20.5rem));
+  gap: 1.35rem;
+  width: min(64.5rem, 100%);
+  justify-content: center;
+}
+
+.access-card {
+  margin-bottom: 0;
+  border: 1px solid #e2e8f0;
+  border-top: 3px solid var(--color-accent);
+  border-radius: 1rem;
+  background: var(--color-surface);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, .05);
+  transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+}
+
+.access-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--color-primary-border);
+  border-top-color: var(--color-primary);
+  box-shadow: 0 16px 34px rgba(0, 63, 125, .1);
+}
+
+.access-card-trigger {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.access-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: .6rem;
+  width: 100%;
+  min-height: 4.1rem;
+  padding: 1rem 1.25rem;
+  background: var(--color-primary-soft);
+  border-bottom: 1px solid rgba(0, 91, 170, .08);
+  color: var(--color-primary);
+}
+
+.access-card-header h2 {
+  color: var(--color-primary-dark);
+  font-size: 1.15rem;
+  line-height: 1.4rem;
+  font-weight: 700;
+}
+
+.access-card-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 1.35rem;
+  width: 100%;
+  padding: 1.35rem 1.45rem 1.4rem;
+  background: #ffffff;
+}
+
+.access-card-body p {
+  margin: 0;
   color: var(--color-muted);
-  font-size: 1rem;
+  font-size: .92rem;
   line-height: 1.55rem;
 }
 
-.access-card p { color: var(--color-muted); }
-.home-tiles { display: grid; grid-template-columns: repeat(3, minmax(14rem, 21rem)); gap: 1.25rem; }
-.access-card > div { display: grid; gap: .9rem; }
-.access-icon { width: 3.25rem; height: 3.25rem; border-radius: .95rem; }
-.access-icon.cyan { color: #0369a1; background: #e0f2fe; }
+.access-card-link {
+  display: inline-flex;
+  align-items: center;
+  gap: .45rem;
+  color: var(--color-primary);
+  font-size: .88rem;
+  font-weight: 650;
+  transition: color .15s ease, gap .15s ease;
+}
+
+.access-card:hover .access-card-link {
+  color: var(--color-primary-dark);
+  gap: .65rem;
+}
 
 .icon-btn {
   display: inline-grid;
@@ -840,11 +920,10 @@ tbody tr:hover { background: var(--color-primary-soft); }
   .metrics { grid-template-columns: 1fr; }
   .header h1 { font-size: 1.5rem; }
   .home-page { align-content: start; padding-top: 1.5rem; }
-  .home-head h1 { font-size: 1.9rem; line-height: 2.25rem; }
-  .home-brand-line { gap: .65rem; padding: .35rem .7rem; }
-  .home-logo { width: 8.75rem; height: 2.8rem; }
-  .home-brand-line span { font-size: 1.18rem; }
-  .home-head p { font-size: .92rem; line-height: 1.4rem; }
+  .home-logo-badge { padding: .5rem 1rem; }
+  .home-logo { width: 8rem; height: 3.4rem; }
+  .home-head h1 { font-size: 1.2rem; line-height: 1.55rem; }
+  .home-head h1 span { font-size: 1rem; line-height: 1.4rem; }
   .load-process-list { grid-template-columns: 1fr; }
   .load-process {
     grid-template-columns: auto minmax(0, 1fr) auto;

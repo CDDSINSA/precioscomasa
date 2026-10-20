@@ -1,4 +1,4 @@
-import { Download, FileCheck2, FileUp, GitCompareArrows, PackagePlus, Search, Trash2, TrendingUp, TriangleAlert, UserSearch, X } from "lucide-react";
+import { Download, FileCheck2, FileUp, GitCompareArrows, PackagePlus, Search, Trash2, TrendingUp, TriangleAlert, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { type RefObject, type UIEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppFeedback } from "../../components/AppFeedback";
@@ -12,6 +12,7 @@ import { allocationLabel, allocationLines } from "../../services/dealEngine";
 import { issueQuote, loadOfferRulesForSkus, loadProductsBySkus } from "../../services/supabase";
 import type { AppProfile, Customer, OfferRule } from "../../types/domain";
 import type { Product, QuoteItem, QuoteSummary } from "../../types/domain";
+import { CustomerCard } from "./CustomerCard";
 import { CustomerSearchModal } from "./CustomerSearchModal";
 import { ImportQuoteModal } from "./ImportQuoteModal";
 import { ProductImage } from "./ProductImage";
@@ -150,6 +151,28 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
     setIssuingPdf(true);
     setQuoteFeedback({ tone: "info", message: "Emitiendo cotización y reservando consecutivo..." });
 
+    // Una oferta puede haberse editado mientras el asesor tenía abierta la cotización.
+    try {
+      const refreshed = await loadOfferRulesForSkus(items.map(item => item.sku.trim()).filter(Boolean), compareSegment ? [segment, compareSegment] : [segment]);
+      if (!refreshed) throw new Error("No se pudieron verificar las ofertas vigentes.");
+      const current = buildQuote(items, segment, refreshed, catalog);
+      if (current.pricingError) throw new Error(current.pricingError);
+      if (JSON.stringify(current) !== JSON.stringify(quote)) {
+        setOfferRules(refreshed);
+        setLoadedRulesKey(requestedRulesKey);
+        setOfferLoadError("");
+        setQuoteFeedback({ tone: "warning", message: "Las ofertas cambiaron. Se recalculó la cotización; revise los precios y vuelva a emitir." });
+        setIssuingPdf(false);
+        setConfirmIssueOpen(false);
+        return;
+      }
+    } catch (error) {
+      setQuoteFeedback({ tone: "warning", message: errorMessage(error) });
+      setIssuingPdf(false);
+      setConfirmIssueOpen(false);
+      return;
+    }
+
     const issued = await issueQuote(quote, {
       customer,
       segment,
@@ -223,19 +246,8 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
               <span>Seleccione cliente y gestione los productos de la cotización.</span>
             </div>
           </div>
+          <CustomerCard customer={customer} onChange={() => setCustomerModalOpen(true)} onClear={clearCustomer} />
           <div className="quote-command-bar" aria-label="Acciones de cotización">
-            <div className="quote-command-group">
-              <Button variant="outline" onClick={() => setCustomerModalOpen(true)}>
-                <UserSearch size={16} />
-                Buscar cliente
-              </Button>
-              {customer ? (
-                <Button variant="ghost" onClick={clearCustomer}>
-                  <X size={16} />
-                  Limpiar
-                </Button>
-              ) : null}
-            </div>
             <div className="quote-command-group">
               <Button variant="outline" onClick={() => setImportModalOpen(true)}>
                 <FileUp size={16} />
@@ -264,15 +276,6 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
             </div>
           ) : null}
           {quoteFeedback ? <AppFeedback tone={quoteFeedback.tone} message={quoteFeedback.message} /> : null}
-          <div className="quote-parameters">
-            <QuoteDataField label="ID cliente" value={customer?.customerId} placeholder="Sin cliente" />
-            <QuoteDataField label="Nombre cliente" value={customer?.displayName} placeholder="Seleccione cliente" />
-            <QuoteDataField label="Correo" value={customer?.email} placeholder="Sin correo" />
-            <QuoteDataField label="Teléfono" value={customer?.mobile} placeholder="Sin teléfono" />
-            <QuoteDataField label="ID / Cédula" value={customer?.nationalId} placeholder="Sin ID" />
-            <QuoteDataField label="Dirección" value={customer?.address} placeholder="Sin dirección" wide />
-            <QuoteDataField label="Segmento base" value={segment ? `Segmento ${segment}` : undefined} placeholder="Desde cliente" wide />
-          </div>
         </CardContent>
       </Card>
 
@@ -357,26 +360,6 @@ function issueBlockerMessage(customer: Customer | null, segment: string, lineCou
   if (!customer) missing.push("seleccione un cliente");
   if (!lineCount) missing.push("agregue al menos un SKU");
   return missing.length ? `Para emitir la cotización: ${missing.join(", ")}.` : "";
-}
-
-function QuoteDataField({
-  label,
-  value,
-  placeholder,
-  wide,
-}: {
-  label: string;
-  value?: string;
-  placeholder: string;
-  wide?: boolean;
-}) {
-  const displayValue = value || placeholder;
-  return (
-    <div className={wide ? "quote-data-field wide" : "quote-data-field"} aria-label={`${label}: ${displayValue}`}>
-      <span>{label}</span>
-      <strong className={value ? "" : "muted-value"}>{displayValue}</strong>
-    </div>
-  );
 }
 
 function QuoteTable({

@@ -109,57 +109,6 @@
   margin-top: .05rem;
 }
 
-.quote-parameters {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(10rem, 1fr));
-  gap: .75rem;
-  align-items: end;
-}
-
-.quote-field,
-.quote-data-field {
-  display: grid;
-  gap: .35rem;
-  min-width: 0;
-}
-
-.quote-field.wide,
-.quote-data-field.wide { grid-column: span 2; }
-.quote-field span,
-.quote-data-field span {
-  color: var(--color-muted);
-  font-size: .72rem;
-}
-
-.quote-data-field strong {
-  display: block;
-  min-height: 2.25rem;
-  overflow: hidden;
-  padding: .58rem .75rem;
-  border: 1px solid #e2e8f0;
-  border-radius: .9rem;
-  color: var(--color-heading);
-  background: #f8fafc;
-  font-size: .875rem;
-  font-weight: 500;
-  line-height: 1.1rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.quote-data-field .muted-value {
-  color: #94a3b8;
-  font-weight: 400;
-}
-
-.quote-field input[readonly] {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--color-heading);
-  background: #f8fafc;
-}
-
-.quote-field input.muted-input { color: #94a3b8; }
 .compare-panel > div { display: grid; gap: 0; padding: 0; }
 .compare-panel .section-head {
   min-height: 5rem;
@@ -1423,7 +1372,6 @@
   .quote-layout.comparing { grid-template-columns: 1fr; }
   .quote-page-head { grid-template-columns: 1fr; }
   .quote-summary-card { justify-self: stretch; }
-  .quote-parameters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 900px) {
@@ -1462,9 +1410,6 @@
   .quote-summary-content { grid-template-columns: 1fr 1fr; }
   .quote-summary-stat strong { font-size: 1rem; line-height: 1.25rem; }
   .product-cell { grid-template-columns: 1fr; }
-  .quote-parameters { grid-template-columns: 1fr; }
-  .quote-field.wide,
-  .quote-data-field.wide { grid-column: auto; }
   .sku-results button { grid-template-columns: 3rem minmax(0, 1fr); }
   .sku-item-price {
     grid-column: 2;

@@ -536,3 +536,61 @@
   min-width: 44px;
   text-align: center;
 }
+
+/* Keep offer actions, commercial values and condition controls distinct. */
+.offer-settings-table {
+  min-width: 1380px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.offer-settings-table th {
+  padding: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.offer-settings-table td {
+  padding: 12px;
+  vertical-align: middle;
+  font-variant-numeric: tabular-nums;
+}
+
+.offer-settings-table tbody tr { background: #fff; }
+.offer-settings-table tbody tr:nth-child(odd) { background: #f8fafc; }
+.offer-settings-table tbody tr:hover { background: var(--color-primary-soft); }
+.offer-settings-table .btn { white-space: nowrap; min-height: 36px; }
+.offer-settings-table .offer-action-cell {
+  position: sticky;
+  left: 0;
+  min-width: 130px;
+  width: 130px;
+  border-right: 1px solid var(--color-border);
+}
+.offer-settings-table td.offer-action-cell { z-index: 2; background: inherit; }
+.offer-settings-table th.offer-action-cell { z-index: 3; }
+.offer-settings-table .offer-promotion-cell { min-width: 175px; }
+.offer-settings-table .offer-promotion-cell > span { max-width: 180px; }
+.offer-settings-table .offer-benefit-cell { text-align: right; white-space: nowrap; min-width: 90px; }
+.offer-settings-table .offer-condition-cell { min-width: 165px; max-width: 220px; }
+.offer-condition-content { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.offer-condition-content small { color: var(--color-muted); font-size: .75rem; line-height: 1.4; }
+.offer-condition-content .offer-pending-note { color: #92400e; }
+.offer-settings-table .offer-quantity-cell { min-width: 140px; }
+.offer-settings-table .offer-quantity-cell > small { white-space: normal; max-width: 140px; margin-top: 6px; }
+.offer-settings-table .offer-threshold-cell { min-width: 120px; }
+.offer-settings-table .offer-threshold-cell select { width: 104px; }
+.offer-settings-table .offer-save-cell { min-width: 135px; }
+.offer-table-scroll:focus-visible,
+.offer-table-search:focus-within { outline: 2px solid var(--color-primary); outline-offset: -2px; }
+.offer-load-panel .offer-table-toolbar { border: 0; border-radius: 0; border-bottom: 1px solid var(--color-border); }
+.offer-load-panel .offer-table-bottom-pagination { border: 0; border-radius: 0; border-top: 1px solid var(--color-border); }
+
+@media (max-width: 600px) {
+  .offer-table-toolbar { align-items: stretch; }
+  .offer-table-search { min-width: 0; max-width: none; flex-basis: 100%; }
+  .offer-table-pagination { gap: 10px; }
+  .offer-table-pagination .pagination-count { flex-basis: 100%; }
+  .offer-settings-table .offer-action-cell { min-width: 118px; width: 118px; padding: 10px 8px; }
+}
