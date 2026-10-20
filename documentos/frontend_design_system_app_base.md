@@ -4,6 +4,10 @@ Este documento sirve como especificacion visual y de experiencia para crear una 
 
 La nueva app debe sentirse como parte de la misma familia: corporativa, sobria, moderna, productiva y facil de operar en escritorio y movil.
 
+## Alcance respecto al cotizador
+
+Nota documental del 5 de octubre de 2026: esta guía sigue siendo una referencia visual reutilizable, no un registro de funcionalidades o SQL instalados. Las reglas vigentes del proyecto se describen en `motor_promociones.md` y el uso en `instructivo_contenido.md`. El editor de kits por SET reutiliza `Button`, los formularios y fieldsets de `deal-editor.css`; la lógica se mantiene separada en servicios y no cambia la identidad visual descrita aquí.
+
 ## Objetivo
 
 Construir una aplicacion web operativa con una interfaz limpia, profesional y orientada a productividad.

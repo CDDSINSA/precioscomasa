@@ -116,7 +116,7 @@ begin
     group by promotion_id, offer_id, segment
   ),
   source_rows as (
-    select distinct on (rows.offer_id, rows.promotion_id, rows.sku, rows.segment, rows.min_quantity)
+    select distinct on (rows.offer_id, rows.promotion_id, rows.sku, coalesce(nullif(btrim(rows.segment), ''), ' - '), rows.min_quantity, coalesce(nullif(btrim(rows.promotion_attribute), ''), ''), rows.id)
       rows.*,
       coalesce(offer_settings.allow_stacking, false) as resolved_allow_stacking,
       case
@@ -136,7 +136,7 @@ begin
     left join kit_sizes kits
       on kits.promotion_id = rows.promotion_id
      and kits.offer_id = rows.offer_id
-     and kits.segment = rows.segment
+     and coalesce(nullif(btrim(kits.segment), ''), ' - ') = coalesce(nullif(btrim(rows.segment), ''), ' - ')
     left join public.promotion_offer_settings offer_settings
       on offer_settings.promotion_id = rows.promotion_id
      and offer_settings.offer_id = rows.offer_id
@@ -150,7 +150,7 @@ begin
       and rows.sku is not null
       and rows.offer_type is not null
       and (rows.offer_type <> 'KIT_OFFER' or coalesce(kits.sku_count, 0) >= 1)
-    order by rows.offer_id, rows.promotion_id, rows.sku, rows.segment, rows.min_quantity, rows.created_at, rows.id
+    order by rows.offer_id, rows.promotion_id, rows.sku, coalesce(nullif(btrim(rows.segment), ''), ' - '), rows.min_quantity, coalesce(nullif(btrim(rows.promotion_attribute), ''), ''), rows.id, rows.created_at
   )
   insert into public.offer_rules (
     external_offer_id,
@@ -162,6 +162,7 @@ begin
     fixed_price,
     discount_percent,
     discount_type,
+    promotion_attribute,
     allow_stacking,
     threshold_quantity,
     threshold_type,
@@ -178,6 +179,7 @@ begin
     fixed_price,
     discount_percent,
     discount_type,
+    promotion_attribute,
     resolved_allow_stacking,
     resolved_threshold_quantity,
     resolved_threshold_type,

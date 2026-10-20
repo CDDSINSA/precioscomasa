@@ -314,6 +314,7 @@ create table if not exists public.customers (
   last_name text not null default '',
   org_name text,
   display_name text not null default '',
+  email text,
   mobile text,
   national_id text,
   segment text not null default '',
@@ -325,6 +326,7 @@ alter table public.customers add column if not exists first_name text default ''
 alter table public.customers add column if not exists last_name text default '';
 alter table public.customers add column if not exists org_name text;
 alter table public.customers add column if not exists display_name text default '';
+alter table public.customers add column if not exists email text;
 alter table public.customers add column if not exists mobile text;
 alter table public.customers add column if not exists national_id text;
 alter table public.customers add column if not exists segment text default '';
@@ -367,7 +369,8 @@ alter table public.quotes add column if not exists quote_number bigint;
 alter table public.quotes add column if not exists quote_code text;
 alter table public.quotes add column if not exists tax numeric(14, 4) default 0;
 alter table public.quotes add column if not exists total_with_tax numeric(14, 4) default 0;
-alter table public.quotes add column if not exists customer_id text references public.customers(customer_id) on delete set null;
+alter table public.quotes drop constraint if exists quotes_customer_id_fkey;
+alter table public.quotes add column if not exists customer_id text;
 alter table public.quotes add column if not exists customer_address text;
 alter table public.quotes add column if not exists customer_phone text;
 alter table public.quotes add column if not exists customer_national_id text;
@@ -439,8 +442,9 @@ insert into public.quote_number_sequence (id, last_value)
 values (true, 0)
 on conflict (id) do nothing;
 
+alter table public.promotion_import_rows drop constraint if exists promotion_import_rows_offer_id_promotion_id_sku_segment_min_key;
 drop index if exists public.promotion_import_rows_business_key;
-create unique index promotion_import_rows_business_key
+create index if not exists promotion_import_rows_business_idx
 on public.promotion_import_rows (offer_id, promotion_id, sku, segment, min_quantity);
 
 create index if not exists promotion_import_rows_promotion_idx
@@ -451,6 +455,13 @@ on public.promotion_import_rows (offer_type, promotion_id, offer_id, segment, sk
 
 create index if not exists promotion_import_rows_publish_idx
 on public.promotion_import_rows (promotion_id, offer_id, sku, segment, min_quantity, created_at, id);
+
+alter table public.offer_rules drop constraint if exists offer_rules_external_offer_id_promotion_id_sku_segment_min__key;
+alter table public.offer_rules drop constraint if exists offer_rules_external_offer_id_promotion_id_sku_segment_min_quantity_key;
+drop index if exists public.offer_rules_external_offer_id_promotion_id_sku_segment_min__key;
+drop index if exists public.offer_rules_business_key;
+create index if not exists offer_rules_business_idx
+on public.offer_rules (external_offer_id, promotion_id, sku, segment, min_quantity);
 
 create index if not exists offer_rules_lookup_idx
 on public.offer_rules (sku, segment, is_active);
@@ -486,6 +497,9 @@ on public.customers (mobile);
 
 create index if not exists customers_national_id_idx
 on public.customers (national_id);
+
+create index if not exists customers_email_idx
+on public.customers (email);
 
 create table if not exists public.stores (
   id text primary key,
@@ -722,6 +736,26 @@ $$;
 
 revoke all on function public.prepare_inventory_sync() from public;
 grant execute on function public.prepare_inventory_sync() to authenticated;
+
+create or replace function public.prepare_customer_sync()
+returns void
+language plpgsql
+security definer
+set search_path = public
+set statement_timeout = '180s'
+as $$
+begin
+  if not public.is_admin() then
+    raise exception 'Solo un administrador puede actualizar clientes.';
+  end if;
+
+  truncate table public.customers;
+end;
+$$;
+
+revoke all on function public.prepare_customer_sync() from public;
+grant execute on function public.prepare_customer_sync() to authenticated;
+
 
 create or replace function public.handle_new_user()
 returns trigger
