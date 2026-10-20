@@ -177,6 +177,45 @@ Verificación local: `npm test`, `npm run build` y la prueba PostgreSQL aislada
 PGlite es una herramienta de prueba opcional, instalada fuera del proyecto; no es una
 dependencia de producción. La migración no ha sido aplicada ni verificada en Supabase remoto.
 
-## Credenciales
+## Edición manual de ofertas simples (19 de octubre de 2026)
+
+En Administración → Configuración de ofertas → **Editar oferta**, el administrador
+puede cambiar descuentos o precios unitarios, agregar SKU existentes en el catálogo
+y retirar filas de la oferta. El editor carga todas las reglas de la promoción,
+oferta y segmento seleccionados, independientemente del límite de la búsqueda.
+Las escalas de un SKU se muestran como filas separadas: retirar una fila retira esa
+escala; para retirar el SKU completo deben retirarse todas sus filas.
+
+Los nuevos SKU usan una fila modelo y heredan sus condiciones del reporte,
+combinación y atributo. Las condiciones adicionales previamente guardadas para
+el SKU conservan su prioridad; no se copian ni eliminan esas configuraciones.
+Los kits, reglas especiales y precios históricos de paquete sin tipo de beneficio
+explícito no se editan desde este panel. No cambia el precio del catálogo.
+
+Antes de guardar se exige un motivo y se muestra un resumen de cambios. Una RPC
+administrativa guarda el conjunto en una transacción, verifica que las reglas
+no hayan cambiado desde la apertura y conserva antes/después, autor y motivo en
+`manual_offer_edit_audit` (consulta administrativa en base de datos).
+
+**El reporte conserva su autoridad:** no existe una capa de ajustes persistentes.
+La publicación completa o parcial conserva su comportamiento y reemplaza las
+ediciones de las promociones afectadas. Las cotizaciones emitidas permanecen
+intactas. Antes de emitir una nueva, la app vuelve a leer las ofertas; si cambia
+el resultado, pide revisar y emitir nuevamente. Esta comprobación es previa a
+la emisión, no un bloqueo transaccional entre lectura y emisión en servidor.
+
+Instalación: aplicar `supabase/manual_offer_edits.sql` en la base existente y
+desplegar la aplicación. Es una migración aditiva y repetible; no redefine la
+sincronización. Requiere el esquema existente, `offer_rules`, `products`,
+`is_admin()` y Supabase Auth. No se ha aplicado desde esta revisión a Supabase
+remoto. El editor informa si falta la función.
+
+Verificación: `npm test`, `npm run build` y
+`node scripts/manual-offer-edits-sql.test.mjs <ruta-a-pglite/dist/index.js>`.
+La prueba SQL usa PostgreSQL aislado y comprueba permisos, cambios de beneficio,
+altas/bajas, aislamiento de segmentos, conflictos, validación, rollback,
+auditoría y reemplazo de reglas como en una recarga.
+
+## Credenciales de acceso
 
 No registrar claves en la documentación ni en el código. Las variables `VITE_*` se exponen al cliente: usar ahí únicamente la clave publicable prevista para la aplicación. `SUPABASE_SERVICE_ROLE_KEY` es exclusiva de procesos administrativos del servidor o terminal, nunca del navegador. Las operaciones remotas dependen de autenticación, políticas RLS y funciones autorizadas en Supabase.
