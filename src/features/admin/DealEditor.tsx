@@ -5,6 +5,7 @@ import { saveOfferDeal, type OfferConfigurationRow } from "../../services/supaba
 import type { DealBenefit, DealConfig } from "../../types/domain";
 import "./deal-editor.css";
 import { KitSetFields } from "./KitSetFields";
+import { DeleteOfferButton } from "./DeleteOfferButton";
 
 const splitSkus = (value: string) => [...new Set(value.split(/[\s,;]+/).map(sku => sku.trim()).filter(Boolean))];
 const defaultBenefit: DealBenefit = { type: "PERCENT_OFF", value: 100 };
@@ -85,7 +86,7 @@ export function DealEditor({ row, onClose, onSaved }: { row: OfferConfigurationR
       </> : null}
       <p>{row.allowStacking ? "Combinable: admite beneficios compatibles de otras ofertas combinables." : "Excluyente: compite contra las otras ofertas por el menor total."}</p>
       {error ? <p role="alert" className="deal-error">{error}</p> : null}
-      <footer><Button onClick={save} disabled={saving}>{saving ? "Guardando…" : "Guardar regla"}</Button></footer>
+      <footer><Button onClick={save} disabled={saving}>{saving ? "Guardando…" : "Guardar regla"}</Button><DeleteOfferButton offerId={row.offerId} promotionId={row.promotionId} segment={row.segment} disabled={saving} onBusyChange={setSaving} onDeleted={onSaved} /></footer>
     </section>
   </div>;
 }

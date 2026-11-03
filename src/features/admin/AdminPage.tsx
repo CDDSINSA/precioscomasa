@@ -1,6 +1,6 @@
 import { isPendingKit } from "../../services/dealConfig";
 import { CUSTOMER_SEGMENTS_LABEL, customerImportMessage } from "../../services/customerSegments.mjs";
-import { Boxes, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Database, Download, Filter, Landmark, PackageSearch, RefreshCw, Save, Search, SlidersHorizontal, Tags, Upload, UsersRound } from "lucide-react";
+import { Boxes, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Database, Download, Filter, Landmark, PackageSearch, RefreshCw, Save, Search, SlidersHorizontal, Tags, Trash2, Upload, UsersRound } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
@@ -10,6 +10,7 @@ import { supabase } from "../../services/supabase";
 import { OfferSetEditor } from "./OfferSetEditor";
 import { SimpleOfferEditor } from "./SimpleOfferEditor";
 import { DealEditor } from "./DealEditor";
+import { DeleteOfferModal } from "./DeleteOfferButton";
 import { AppFeedback } from "../../components/AppFeedback";
 import { Badge, Button, Card, CardContent, Header, Metric } from "../../components/ui";
 import { inventoryFeatureEnabled, inventoryStoreId } from "../../config/features";
@@ -121,6 +122,7 @@ export function AdminPage() {
 
   function refreshSavedOfferConfiguration() {
     setOfferMetricsRefreshKey(key => key + 1);
+    setMetricsRefreshKey(key => key + 1);
     if (offerConfigRows.length) void loadOfferConfigurationRows();
   }
 
@@ -180,6 +182,7 @@ export function AdminPage() {
 
     setMessage(result.message);
     setOfferMetricsRefreshKey(key => key + 1);
+    setMetricsRefreshKey(key => key + 1);
   }
 
   async function saveOfferThreshold(row: OfferConfigurationRow) {
@@ -597,6 +600,7 @@ function OfferConfigurationPanel({
   const [editing, setEditing] = useState<OfferConfigurationRow | null>(null);
   const [editingOffer, setEditingOffer] = useState<string | null>(null);
   const [editingSimple, setEditingSimple] = useState<OfferConfigurationRow | null>(null);
+  const [deletingOffer, setDeletingOffer] = useState<OfferConfigurationRow | null>(null);
   const [exportMessage, setExportMessage] = useState("");
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(50);
@@ -629,7 +633,7 @@ function OfferConfigurationPanel({
     <LoadPanel
       className="offer-load-panel"
       title="Configuración de ofertas"
-      subtitle="Configure condiciones y SET, o edite beneficios y productos de ofertas simples."
+      subtitle="Configure condiciones y SET, edite beneficios y productos, o elimine ofertas vigentes."
       actions={
         <div className="offer-toolbar-actions">
           <div className="offer-search-inputs">
@@ -715,6 +719,7 @@ function OfferConfigurationPanel({
       {editingOffer ? <OfferSetEditor offerId={editingOffer} onClose={() => setEditingOffer(null)} onSaved={() => { setEditingOffer(null); onSaved(); }} /> : null}
       {editingSimple ? <SimpleOfferEditor row={editingSimple} onClose={() => setEditingSimple(null)} onSaved={() => { setEditingSimple(null); setExportMessage("Oferta actualizada. La próxima carga del reporte reemplazará estos cambios si incluye esta promoción."); onSaved(); }} /> : null}
       {editing ? <DealEditor row={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); onSaved(); }} /> : null}
+      {deletingOffer ? <DeleteOfferModal row={deletingOffer} onClose={() => setDeletingOffer(null)} onDeleted={(msg) => { setDeletingOffer(null); setExportMessage(msg); onSaved(); }} /> : null}
       <PreviewFrame title="Ofertas y condiciones" scrollable={false}>
         {rows.length > 0 ? (
           <div className="offer-table-toolbar">
@@ -827,7 +832,10 @@ function OfferConfigurationPanel({
               return (
                 <tr key={row.ruleId}>
                   <td className="offer-action-cell">
-                    {row.type !== "KIT_OFFER" && (!row.deal || row.deal.kind === "UNIT") ? <Button variant="outline" onClick={() => setEditingSimple(row)} aria-label={`Editar oferta ${row.offerId}, promoción ${row.promotionId}, segmento ${row.segment.trim() === "-" ? "Todos" : row.segment}`}>Editar oferta</Button> : <small>Ver configuración</small>}
+                    <div className="offer-row-actions">
+                      {row.type !== "KIT_OFFER" && (!row.deal || row.deal.kind === "UNIT") ? <Button variant="outline" onClick={() => setEditingSimple(row)} aria-label={`Editar oferta ${row.offerId}, promoción ${row.promotionId}, segmento ${row.segment.trim() === "-" ? "Todos" : row.segment}`}>Editar oferta</Button> : <small>Ver configuración</small>}
+                      <button type="button" className="btn btn-outline offer-row-delete-btn" onClick={() => setDeletingOffer(row)} title={`Borrar oferta ${row.offerId}`} aria-label={`Borrar oferta ${row.offerId}, promoción ${row.promotionId}, segmento ${row.segment.trim() === "-" ? "Todos" : row.segment}`}><Trash2 size={14} aria-hidden="true" /><span>Borrar</span></button>
+                    </div>
                   </td>
                   <td className="offer-promotion-cell">
                     <strong>{row.promotionId}</strong>

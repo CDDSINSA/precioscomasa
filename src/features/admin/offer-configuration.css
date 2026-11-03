@@ -564,12 +564,43 @@
 .offer-settings-table .offer-action-cell {
   position: sticky;
   left: 0;
-  min-width: 130px;
-  width: 130px;
+  min-width: 140px;
+  width: 140px;
   border-right: 1px solid var(--color-border);
 }
 .offer-settings-table td.offer-action-cell { z-index: 2; background: inherit; }
 .offer-settings-table th.offer-action-cell { z-index: 3; }
+.offer-row-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.offer-row-actions > small {
+  color: var(--color-muted);
+  font-size: 0.75rem;
+  text-align: center;
+  padding: 2px 0;
+}
+.offer-settings-table .offer-row-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 4px 10px;
+  font-size: 0.78rem;
+  color: #b91c1c;
+  border-color: #fecaca;
+  background: #ffffff;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.offer-settings-table .offer-row-delete-btn:hover:not(:disabled),
+.offer-settings-table .offer-row-delete-btn:focus-visible {
+  background: #fef2f2;
+  border-color: #f87171;
+  color: #991b1b;
+}
 .offer-settings-table .offer-promotion-cell { min-width: 175px; }
 .offer-settings-table .offer-promotion-cell > span { max-width: 180px; }
 .offer-settings-table .offer-benefit-cell { text-align: right; white-space: nowrap; min-width: 90px; }

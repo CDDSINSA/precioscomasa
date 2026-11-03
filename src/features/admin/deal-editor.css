@@ -10,4 +10,173 @@
 .deal-editor .deal-checkbox { flex-direction: row; align-items: center; }
 .deal-editor .deal-checkbox input { width: auto; }
 .deal-editor .deal-error { color: #b91c1c; }
-@media (max-width: 500px) { .deal-fields { grid-template-columns: 1fr; gap: 0; } }
+.deal-editor footer { flex-wrap: wrap; }
+.offer-delete-control { margin-left: auto; }
+.deal-editor .offer-delete-button { color: #b91c1c; border-color: #fecaca; }
+.deal-editor .offer-delete-button:hover:not(:disabled) { background: #fef2f2; }
+.offer-delete-confirm { margin-top: 12px; padding: 16px; border: 1px solid #fecaca; border-radius: 8px; background: #fff7f7; }
+.offer-delete-control:has(.offer-delete-confirm) { flex-basis: 100%; }
+.offer-delete-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 12px; }
+.deal-editor .offer-delete-confirm-button { background: #b91c1c; border-color: #b91c1c; color: white; box-shadow: none; }
+.deal-editor .offer-delete-confirm-button:hover:not(:disabled) { background: #991b1b; border-color: #991b1b; }
+
+/* Dedicated Delete Offer Modal */
+.offer-delete-modal {
+  width: min(620px, 94vw);
+}
+.offer-delete-modal-header {
+  padding-bottom: 14px;
+  border-bottom: 1px solid #e2e8f0;
+  margin-bottom: 16px;
+}
+.offer-delete-modal-title-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.offer-delete-modal-title-group span {
+  display: block;
+  font-size: 13px;
+  color: #64748b;
+  margin-top: 2px;
+}
+.offer-delete-icon-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+  flex-shrink: 0;
+}
+.offer-delete-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  margin-bottom: 16px;
+}
+.offer-delete-meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.offer-delete-meta-item span {
+  font-size: 11.5px;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.offer-delete-meta-item strong {
+  font-size: 13.5px;
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.offer-delete-scope-fieldset {
+  margin: 0 0 16px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.offer-delete-scope-fieldset legend {
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+  padding: 0 6px;
+}
+.deal-editor label.offer-scope-option {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  cursor: pointer;
+  background: #ffffff;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.deal-editor label.offer-scope-option:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+.deal-editor label.offer-scope-option.active {
+  border-color: #f87171;
+  background: #fff7f7;
+}
+.deal-editor label.offer-scope-option input[type="radio"] {
+  width: auto;
+  margin-top: 3px;
+  accent-color: #b91c1c;
+}
+.offer-scope-option div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.offer-scope-option strong {
+  font-size: 13.5px;
+  color: #0f172a;
+}
+.offer-scope-option span {
+  font-size: 12.5px;
+  color: #475569;
+  line-height: 1.45;
+}
+.offer-delete-impact-box {
+  padding: 14px 16px;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  background: #fff7f7;
+  margin-bottom: 16px;
+}
+.offer-delete-impact-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.offer-delete-impact-head strong {
+  font-size: 13.5px;
+  color: #991b1b;
+}
+.offer-delete-impact-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: #7f1d1d;
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.deal-editor label.offer-delete-reason-field {
+  margin: 0 0 16px;
+}
+.offer-delete-reason-field span {
+  font-weight: 600;
+  color: #1e293b;
+}
+.offer-delete-modal-footer {
+  justify-content: flex-end;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+}
+
+@media (max-width: 560px) {
+  .deal-fields { grid-template-columns: 1fr; gap: 0; }
+  .offer-delete-meta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

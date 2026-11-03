@@ -5,6 +5,7 @@ import { supabase } from "../../services/supabase";
 import { readKitEditorData, submitOfferDetails, type ConfigurationPreview } from "../../services/offerConfigurationStore";
 import { KitSetFields } from "./KitSetFields";
 import "./deal-editor.css";
+import { DeleteOfferButton } from "./DeleteOfferButton";
 
 export function OfferSetEditor({ offerId, onClose, onSaved }: { offerId: string; onClose: () => void; onSaved: () => void }) {
   const [sets, setSets] = useState<KitSet[]>([]);
@@ -67,7 +68,7 @@ export function OfferSetEditor({ offerId, onClose, onSaved }: { offerId: string;
       </fieldset>
       {preview ? <p role="status">Validación completa. Al guardar se reemplazan todos los SET de esta oferta. Se conservará una copia de los anteriores.{preview.legacy_count ? ` ${preview.legacy_count} reglas anteriores quedarán subordinadas a esta configuración.` : ""}</p> : null}
       {error ? <p role="alert" className="deal-error">{error}</p> : null}
-      <footer><Button disabled={busy || !sets.length} onClick={() => void save()}>{busy ? "Procesando…" : preview ? "Guardar SET" : "Validar SET"}</Button></footer>
+      <footer><Button disabled={busy || !sets.length} onClick={() => void save()}>{busy ? "Procesando…" : preview ? "Guardar SET" : "Validar SET"}</Button><DeleteOfferButton offerId={offerId} disabled={busy || !skus.length} onBusyChange={setBusy} onDeleted={onSaved} /></footer>
     </section>
   </div>;
 }

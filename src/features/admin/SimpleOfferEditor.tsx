@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "../../components/ui";
 import { supabase, loadProductsBySkus, type OfferConfigurationRow } from "../../services/supabase";
 import "./deal-editor.css";
+import { DeleteOfferButton } from "./DeleteOfferButton";
 
 type Rule = { id: string; sku: string; min_quantity: number; discount_type: string | null; discount_percent: number | null; fixed_price: number | null };
 type Draft = { key: string; id: string; sku: string; benefit: string; value: string; added?: boolean; removed?: boolean };
@@ -100,6 +101,6 @@ export function SimpleOfferEditor({ row, onClose, onSaved }: { row: OfferConfigu
     </fieldset>
     {review ? <div role="status"><strong>Revise {changed.length} cambio(s) antes de guardar:</strong><ul>{changed.map(r => { const old = original.find(o => o.id === r.id); const label = (b: string, v: string) => b === "PERCENT_OFF" ? `${v}%` : `C$ ${v} por unidad`; return <li key={r.key}>{r.sku}: {r.removed ? "retirar de esta oferta y segmento" : r.added ? `agregar con ${label(r.benefit, r.value)}` : `${old ? label(draft(old).benefit, draft(old).value) : ""} → ${label(r.benefit, r.value)}`}</li>; })}</ul>{rows.every(r => r.removed) ? <p>Se retirarán todos los SKU de este segmento de la oferta.</p> : null}</div> : null}
     {error ? <p role="alert" className="deal-error">{error}</p> : null}
-    <footer><Button disabled={busy || !revision || !changed.length} onClick={() => void save()}>{review ? "Guardar cambios" : "Revisar cambios"}</Button></footer>
+    <footer><Button disabled={busy || !revision || !changed.length} onClick={() => void save()}>{review ? "Guardar cambios" : "Revisar cambios"}</Button><DeleteOfferButton offerId={row.offerId} promotionId={row.promotionId} segment={row.segment} disabled={busy || !revision} onBusyChange={setBusy} onDeleted={onSaved} /></footer>
   </section></div>;
 }
