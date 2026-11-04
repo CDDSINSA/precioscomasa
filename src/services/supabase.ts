@@ -36,6 +36,10 @@ export const supabase =
 export const hasSupabaseConfig = Boolean(supabase);
 
 const productSelectColumns =
+  "sku,legacy_number,description,unit_of_measure,list_price,part_number,department_id,max_discount,taxable,supplier,sup_name";
+const productSelectColumnsSupplierId =
+  "sku,legacy_number,description,unit_of_measure,list_price,part_number,department_id,max_discount,taxable,supplier_id,supplier_name";
+const standardProductSelectColumns =
   "sku,legacy_number,description,unit_of_measure,list_price,part_number,department_id,max_discount,taxable";
 const legacyProductSelectColumns =
   "sku,legacy_number,description,unit_of_measure,list_price,part_number,max_discount,taxable";
@@ -129,6 +133,10 @@ type ProductRow = {
   department_id: string | null;
   max_discount: number | string | null;
   taxable: boolean | null;
+  supplier_id?: string | null;
+  supplier_name?: string | null;
+  supplier?: string | null;
+  sup_name?: string | null;
 };
 
 type ProductSearchInventoryRow = ProductRow & {
@@ -550,21 +558,38 @@ export async function loadProductDepartments(): Promise<ProductDepartment[]> {
 export async function loadProductsFromSupabase(): Promise<Product[] | null> {
   if (!supabase) return null;
 
-  const response = await supabase
+  let response: { data: unknown; error: { code?: string; message: string } | null } = await supabase
     .from("products")
     .select(productSelectColumns)
     .order("description", { ascending: true })
     .limit(8000);
 
-  const { data, error } = response.error && isMissingColumnError(response.error)
-    ? await supabase
-        .from("products")
-        .select(legacyProductSelectColumns)
-        .order("description", { ascending: true })
-        .limit(8000)
-    : response;
+  if (response.error && isMissingColumnError(response.error)) {
+    response = await supabase
+      .from("products")
+      .select(productSelectColumnsSupplierId)
+      .order("description", { ascending: true })
+      .limit(8000);
+  }
 
-  if (error || !data?.length) return null;
+  if (response.error && isMissingColumnError(response.error)) {
+    response = await supabase
+      .from("products")
+      .select(standardProductSelectColumns)
+      .order("description", { ascending: true })
+      .limit(8000);
+  }
+
+  if (response.error && isMissingColumnError(response.error)) {
+    response = await supabase
+      .from("products")
+      .select(legacyProductSelectColumns)
+      .order("description", { ascending: true })
+      .limit(8000);
+  }
+
+  const { data, error } = response;
+  if (error || !Array.isArray(data) || !data.length) return null;
   return (data as ProductRow[]).map(mapProduct);
 }
 
@@ -665,22 +690,34 @@ export async function loadProductsBySkus(skus: string[]): Promise<Product[]> {
   const cleanSkus = unique(skus.map((sku) => sku.trim()).filter(Boolean));
   if (!cleanSkus.length) return [];
 
-  const { data, error } = await supabase
+  let response: { data: unknown; error: { code?: string; message: string } | null } = await supabase
     .from("products")
     .select(productSelectColumns)
     .in("sku", cleanSkus);
 
-  if (error && isMissingColumnError(error)) {
-    const legacyResponse = await supabase
+  if (response.error && isMissingColumnError(response.error)) {
+    response = await supabase
+      .from("products")
+      .select(productSelectColumnsSupplierId)
+      .in("sku", cleanSkus);
+  }
+
+  if (response.error && isMissingColumnError(response.error)) {
+    response = await supabase
+      .from("products")
+      .select(standardProductSelectColumns)
+      .in("sku", cleanSkus);
+  }
+
+  if (response.error && isMissingColumnError(response.error)) {
+    response = await supabase
       .from("products")
       .select(legacyProductSelectColumns)
       .in("sku", cleanSkus);
-
-    if (legacyResponse.error || !legacyResponse.data) return [];
-    return (legacyResponse.data as ProductRow[]).map(mapProduct);
   }
 
-  if (error || !data) return [];
+  const { data, error } = response;
+  if (error || !Array.isArray(data)) return [];
   return (data as ProductRow[]).map(mapProduct);
 }
 
@@ -774,9 +811,21 @@ export async function syncProductsToSupabase(
   const prepared = await prepareCatalogSync();
   if (!prepared.ok) return prepared;
 
-  const uploaded = await uploadInChunks(validProducts, 700, onProgress, "Cargando catálogo vigente", async (chunk) =>
-    supabase.from("products").insert(chunk.map(productPayload)),
-  );
+  const excludedColumns = new Set<string>();
+  const uploaded = await uploadInChunks(validProducts, 700, onProgress, "Cargando catálogo vigente", async (chunk) => {
+    while (true) {
+      const response = await supabase.from("products").insert(chunk.map((p) => productPayload(p, excludedColumns)));
+      if (response.error && isMissingColumnError(response.error)) {
+        const match = response.error.message.match(/column ["']?([a-zA-Z0-9_]+)["']?|'([a-zA-Z0-9_]+)' column/i);
+        const missingCol = match?.[1] || match?.[2];
+        if (missingCol && !excludedColumns.has(missingCol)) {
+          excludedColumns.add(missingCol);
+          continue;
+        }
+      }
+      return response;
+    }
+  });
   if (!uploaded.ok) return uploaded;
 
   return { ok: true, message: `Sincronización de catálogo completada: ${validProducts.length} productos publicados.` };
@@ -1358,6 +1407,8 @@ function mapCustomer(row: CustomerRow): Customer {
 }
 
 function mapProduct(row: ProductRow): Product {
+  const supplierId = (row.supplier_id ?? row.supplier ?? "") ? String(row.supplier_id ?? row.supplier).trim() : undefined;
+  const supplierName = (row.supplier_name ?? row.sup_name ?? "") ? String(row.supplier_name ?? row.sup_name).trim() : undefined;
   return {
     sku: row.sku.trim(),
     legacyNumber: row.legacy_number ?? undefined,
@@ -1368,6 +1419,10 @@ function mapProduct(row: ProductRow): Product {
     departmentId: row.department_id ?? undefined,
     maxDiscount: row.max_discount === null ? undefined : Number(row.max_discount),
     taxable: row.taxable ?? true,
+    supplierId,
+    supplierName,
+    supplier: supplierId,
+    supName: supplierName,
   };
 }
 
@@ -1487,8 +1542,10 @@ function customerQuotePayload(customer: Customer) {
   };
 }
 
-function productPayload(product: Product) {
-  return {
+function productPayload(product: Product, excludedColumns: Set<string> = new Set()) {
+  const supplierId = product.supplierId ?? product.supplier ?? null;
+  const supplierName = product.supplierName ?? product.supName ?? null;
+  const payload: Record<string, unknown> = {
     sku: product.sku,
     legacy_number: product.legacyNumber ?? null,
     description: product.description,
@@ -1498,8 +1555,17 @@ function productPayload(product: Product) {
     department_id: product.departmentId ?? null,
     max_discount: product.maxDiscount ?? null,
     taxable: product.taxable,
+    supplier: supplierId,
+    sup_name: supplierName,
+    supplier_id: supplierId,
+    supplier_name: supplierName,
     updated_at: new Date().toISOString(),
   };
+
+  for (const col of excludedColumns) {
+    delete payload[col];
+  }
+  return payload;
 }
 
 function inventoryPayload(record: InventoryRecord) {
@@ -1671,7 +1737,14 @@ function isMissingRpcFunctionError(error: { code?: string; message: string }) {
 }
 
 function isMissingColumnError(error: { code?: string; message: string }) {
-  return error.code === "42703" || error.message.toLowerCase().includes("department_id");
+  const msg = (error.message ?? "").toLowerCase();
+  return (
+    error.code === "42703" ||
+    error.code === "PGRST204" ||
+    msg.includes("department_id") ||
+    msg.includes("supplier") ||
+    msg.includes("sup_name")
+  );
 }
 
 function sortProductsByRelevance(products: Product[], query: string) {
@@ -1691,7 +1764,9 @@ function productSearchScore(product: Product, query: string, queryTokens: string
   const partNumber = normalizeSearchValue(product.partNumber);
   const legacyNumber = normalizeSearchValue(product.legacyNumber);
   const description = normalizeSearchValue(product.description);
-  const searchable = [sku, partNumber, legacyNumber, description].join(" ");
+  const supplierId = normalizeSearchValue(product.supplierId ?? product.supplier);
+  const supplierName = normalizeSearchValue(product.supplierName ?? product.supName);
+  const searchable = [sku, partNumber, legacyNumber, description, supplierId, supplierName].join(" ");
 
   if (sku === query) return 0;
   if (partNumber === query || legacyNumber === query) return 1;

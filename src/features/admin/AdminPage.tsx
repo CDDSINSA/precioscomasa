@@ -88,6 +88,7 @@ export function AdminPage() {
   const inventoryUnits = useMemo(() => inventoryRows.reduce((sum, row) => sum + row.quantity, 0), [inventoryRows]);
   const customerSegments = useMemo(() => new Set(customerRows.map((row) => row.segment).filter(Boolean)).size, [customerRows]);
   const uniqueCatalogDepartments = useMemo(() => new Set(catalogRows.map((row) => row.departmentId).filter(Boolean)).size, [catalogRows]);
+  const uniqueCatalogSuppliers = useMemo(() => new Set(catalogRows.map((row) => row.supplierId || row.supplierName || row.supplier || row.supName).filter(Boolean)).size, [catalogRows]);
 
   useEffect(() => {
     let active = true;
@@ -448,6 +449,7 @@ export function AdminPage() {
                   rows={catalogRows}
                   uniqueDepartments={uniqueCatalogDepartments}
                   uniqueSkus={uniqueCatalogSkus}
+                  uniqueSuppliers={uniqueCatalogSuppliers}
                   preview={catalogRows.slice(0, 20)}
                   onFile={handleCatalogFile}
                   onSync={syncCatalog}
@@ -1028,6 +1030,7 @@ function CatalogLoadPanel({
   rows,
   uniqueDepartments,
   uniqueSkus,
+  uniqueSuppliers,
   preview,
   onFile,
   onSync,
@@ -1035,6 +1038,7 @@ function CatalogLoadPanel({
   rows: Product[];
   uniqueDepartments: number;
   uniqueSkus: number;
+  uniqueSuppliers: number;
   preview: Product[];
   onFile: (file?: File) => void;
   onSync: () => void;
@@ -1042,27 +1046,43 @@ function CatalogLoadPanel({
   return (
     <LoadPanel
       title="Catalogo"
-      subtitle="Maestro de SKU, descripcion, departamento, unidad, precio y numero de parte."
+      subtitle="Maestro de SKU, descripcion, departamento, proveedor, unidad, precio y numero de parte."
       actions={<><UploadButton label="Cargar catálogo" onFile={onFile} /><Button disabled={!rows.length} onClick={onSync}><PackageSearch size={16} />Actualizar catálogo</Button></>}
       summary={[
         ["SKU", uniqueSkus],
         ["Con precio", rows.filter((row) => row.listPrice > 0).length],
         ["Departamentos", uniqueDepartments],
+        ["Proveedores", uniqueSuppliers],
       ]}
     >
       <PreviewFrame title="Productos detectados">
         <table>
           <thead>
-            <tr><th>SKU</th><th>Descripción</th><th>Depto.</th><th>U/M</th><th>Precio unitario</th><th>Número parte</th></tr>
+            <tr>
+              <th>SKU</th>
+              <th>Descripción</th>
+              <th>Depto.</th>
+              <th>ID Prov.</th>
+              <th>Proveedor</th>
+              <th>U/M</th>
+              <th>Precio unitario</th>
+              <th>Número parte</th>
+            </tr>
           </thead>
           <tbody>
             {preview.map((product) => (
               <tr key={product.sku}>
-                <td>{product.sku}</td><td>{product.description}</td><td>{product.departmentId ?? "-"}</td><td>{product.unitOfMeasure ?? "-"}</td>
-                <td>{product.listPrice.toLocaleString("es-NI")}</td><td>{product.partNumber ?? "-"}</td>
+                <td>{product.sku}</td>
+                <td>{product.description}</td>
+                <td>{product.departmentId ?? "-"}</td>
+                <td>{product.supplierId ?? product.supplier ?? "-"}</td>
+                <td>{product.supplierName ?? product.supName ?? "-"}</td>
+                <td>{product.unitOfMeasure ?? "-"}</td>
+                <td>{product.listPrice.toLocaleString("es-NI")}</td>
+                <td>{product.partNumber ?? "-"}</td>
               </tr>
             ))}
-            {!preview.length ? <EmptyRow colSpan={6} label="No hay catálogo cargado." /> : null}
+            {!preview.length ? <EmptyRow colSpan={8} label="No hay catálogo cargado." /> : null}
           </tbody>
         </table>
       </PreviewFrame>

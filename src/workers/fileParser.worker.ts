@@ -283,6 +283,35 @@ function parseCatalogRows(rows: Record<string, unknown>[]): Product[] {
         ).trim();
         const maxDiscount = toNumber(pick(data, ["tienda_desc_max"]) ?? data[27]);
         const taxableValue = String(pick(data, ["aplica_impuesto"]) ?? data[26] ?? "S").trim().toUpperCase();
+        const rawSupplierId = String(
+          pick(data, [
+            "supplier",
+            "id proveedor",
+            "id_proveedor",
+            "idproveedor",
+            "proveedor id",
+            "proveedor",
+            "vendor",
+            "vendor_id",
+          ]) ?? "",
+        ).trim();
+        const rawSupplierName = String(
+          pick(data, [
+            "sup_name",
+            "sup_nam",
+            "sup name",
+            "sup nam",
+            "supplier_name",
+            "supplier name",
+            "nombre proveedor",
+            "nombre_proveedor",
+            "nombre de proveedor",
+            "vendor_name",
+            "vendor name",
+          ]) ?? "",
+        ).trim();
+        const supplierId = rawSupplierId || undefined;
+        const supplierName = rawSupplierName || undefined;
 
         return {
           sku,
@@ -294,6 +323,10 @@ function parseCatalogRows(rows: Record<string, unknown>[]): Product[] {
           departmentId: departmentId || undefined,
           maxDiscount,
           taxable: taxableValue !== "N",
+          supplierId,
+          supplierName,
+          supplier: supplierId,
+          supName: supplierName,
         };
       })
       .filter((product) => product.sku && product.description && product.listPrice > 0),

@@ -106,6 +106,10 @@ function parseCatalogTsv(text: string): Product[] {
       departmentId: String(value(row, ["dep", "dept", "department_id", "id departamento", "departamento"], 4)).trim() || undefined,
       maxDiscount: parseNumber(value(row, ["tienda_desc_max"], 26)) || undefined,
       taxable: String(value(row, ["aplica_impuesto"], 25)).trim().toUpperCase() !== "N",
+      supplierId: String(value(row, ["supplier", "id proveedor", "id_proveedor", "proveedor"], -1)).trim() || undefined,
+      supplierName: String(value(row, ["sup_name", "sup_nam", "sup name", "supplier_name", "nombre proveedor"], -1)).trim() || undefined,
+      get supplier() { return this.supplierId; },
+      get supName() { return this.supplierName; },
     }))
     .filter((product) => product.sku && product.description && product.listPrice > 0);
 }
@@ -141,7 +145,7 @@ export function searchProducts(catalog: Product[], term: string) {
   if (!query) return catalog;
 
   return catalog.filter((product) =>
-    [product.sku, product.description, product.partNumber, product.legacyNumber]
+    [product.sku, product.description, product.partNumber, product.legacyNumber, product.supplierId, product.supplierName]
       .filter(Boolean)
       .some((value) => value!.toLowerCase().includes(query)),
   );

@@ -47,6 +47,10 @@ export type Product = {
   departmentId?: string;
   maxDiscount?: number;
   taxable: boolean;
+  supplierId?: string;
+  supplierName?: string;
+  supplier?: string;
+  supName?: string;
 };
 
 export type ProductDepartment = {
