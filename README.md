@@ -38,7 +38,7 @@ El centro de carga permite actualizar datos por proceso. Clientes, catalogo, inv
 
 - Promociones: archivo comercial de ofertas. Se conservan los kits de cualquier número de SKU; sin SET configurados quedan pendientes y no participan en el cálculo. El reporte no aporta la pertenencia a SET.
 - Clientes: reporte de clientes para busqueda y segmento base.
-- Catalogo: SKU, descripcion, unidad de medida, precio unitario y numero de parte.
+- Catalogo: SKU, descripcion, departamento, unidad de medida, precio unitario, numero de parte, ID de proveedor (SUPPLIER) y nombre de proveedor (SUP_NAME).
 - Inventario: tienda, SKU y existencia. La sincronizacion publica solo registros de tienda 1041.
 - Tiendas: ID y nombre de tienda como soporte interno del inventario.
 
@@ -73,6 +73,9 @@ El script aplica el mismo filtro y reemplaza totalmente la tabla `customers`: pr
 - `admin`: acceso a administracion y cotizacion.
 - `asesor-comasa`: acceso solo al cotizador.
 - `asesor-retail`: acceso solo al cotizador.
+- `asesor-peinsa`: acceso solo al cotizador, restringido a nivel de base de datos (RLS) exclusivamente a productos del proveedor 1022301.
+
+Para habilitar este rol y su política RLS en Supabase, ejecute `supabase/peinsa_role.sql` en el SQL Editor de Supabase.
 
 Al crear usuarios en Supabase Auth, asignar el rol en `app_profiles.role`. Si el usuario se crea despues de ejecutar el script SQL, el perfil se genera automaticamente con `asesor-comasa` como rol inicial.
 

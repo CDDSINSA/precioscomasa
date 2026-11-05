@@ -11,6 +11,7 @@ end $$;
 alter type public.app_role add value if not exists 'admin';
 alter type public.app_role add value if not exists 'asesor-comasa';
 alter type public.app_role add value if not exists 'asesor-retail';
+alter type public.app_role add value if not exists 'asesor-peinsa';
 
 do $$
 begin
@@ -67,6 +68,10 @@ create table if not exists public.products (
   list_price numeric(14, 4) not null default 0 check (list_price >= 0),
   max_discount numeric(7, 4),
   taxable boolean not null default true,
+  supplier text,
+  sup_name text,
+  supplier_id text,
+  supplier_name text,
   updated_at timestamptz not null default now()
 );
 
@@ -79,6 +84,10 @@ alter table public.products add column if not exists department_id text;
 alter table public.products add column if not exists list_price numeric(14, 4) default 0;
 alter table public.products add column if not exists max_discount numeric(7, 4);
 alter table public.products add column if not exists taxable boolean default true;
+alter table public.products add column if not exists supplier text;
+alter table public.products add column if not exists sup_name text;
+alter table public.products add column if not exists supplier_id text;
+alter table public.products add column if not exists supplier_name text;
 alter table public.products add column if not exists updated_at timestamptz default now();
 update public.products set description = '' where description is null;
 update public.products set list_price = 0 where list_price is null;
@@ -555,7 +564,9 @@ returns table (
   department_id text,
   max_discount numeric,
   taxable boolean,
-  inventory_quantity numeric
+  inventory_quantity numeric,
+  supplier text,
+  sup_name text
 )
 language sql
 stable
@@ -578,6 +589,8 @@ as $$
       products.department_id,
       products.max_discount,
       products.taxable,
+      coalesce(products.supplier, products.supplier_id) as supplier,
+      coalesce(products.sup_name, products.supplier_name) as sup_name,
       coalesce(sum(inventory.quantity) filter (where inventory.quantity > 0), 0) as inventory_quantity,
       normalized.query,
       concat_ws(
@@ -599,6 +612,16 @@ as $$
         search_division_id is null
         or search_division_id = ''
         or product_departments.division_id = search_division_id
+      )
+      and (
+        public.current_app_role()::text in ('admin', 'asesor-comasa', 'asesor-retail')
+        or (
+          public.current_app_role()::text = 'asesor-peinsa'
+          and (
+            coalesce(products.supplier, '') = '1022301'
+            or coalesce(products.supplier_id, '') = '1022301'
+          )
+        )
       )
       and (
         normalized.query = ''
@@ -629,6 +652,10 @@ as $$
       products.department_id,
       products.max_discount,
       products.taxable,
+      products.supplier,
+      products.supplier_id,
+      products.sup_name,
+      products.supplier_name,
       normalized.query
   ),
   scored as (
@@ -666,7 +693,9 @@ as $$
     scored.department_id,
     scored.max_discount,
     scored.taxable,
-    scored.inventory_quantity
+    scored.inventory_quantity,
+    scored.supplier,
+    scored.sup_name
   from scored
   order by
     (scored.inventory_quantity > 0) desc,
@@ -678,6 +707,7 @@ $$;
 
 revoke all on function public.search_products_with_inventory(text, text, integer, integer, text) from public;
 grant execute on function public.search_products_with_inventory(text, text, integer, integer, text) to authenticated;
+
 
 create or replace function public.current_app_role()
 returns public.app_role
@@ -771,7 +801,7 @@ begin
     new.id,
     coalesce(new.raw_user_meta_data->>'full_name', split_part(new.email, '@', 1)),
     case
-      when requested_role in ('admin', 'asesor-comasa', 'asesor-retail')
+      when requested_role in ('admin', 'asesor-comasa', 'asesor-retail', 'asesor-peinsa')
         then requested_role::public.app_role
       else 'asesor-comasa'::public.app_role
     end
@@ -972,7 +1002,7 @@ select
   users.id,
   coalesce(users.raw_user_meta_data->>'full_name', split_part(users.email, '@', 1), 'Usuario'),
   case
-    when users.raw_user_meta_data->>'role' in ('admin', 'asesor-comasa', 'asesor-retail')
+    when users.raw_user_meta_data->>'role' in ('admin', 'asesor-comasa', 'asesor-retail', 'asesor-peinsa')
       then (users.raw_user_meta_data->>'role')::public.app_role
     else 'asesor-comasa'::public.app_role
   end
@@ -1038,7 +1068,14 @@ create policy "profiles_admin_write" on public.app_profiles
 for all to authenticated using (public.is_admin()) with check (public.is_admin());
 
 create policy "products_read_for_quotes" on public.products
-for select to authenticated using (true);
+for select to authenticated
+using (
+  public.current_app_role()::text in ('admin', 'asesor-comasa', 'asesor-retail')
+  or (
+    public.current_app_role()::text = 'asesor-peinsa'
+    and (supplier = '1022301' or supplier_id = '1022301')
+  )
+);
 
 create policy "products_admin_write" on public.products
 for all to authenticated using (public.is_admin()) with check (public.is_admin());

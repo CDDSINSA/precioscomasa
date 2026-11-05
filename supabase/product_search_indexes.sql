@@ -48,7 +48,9 @@ returns table (
   department_id text,
   max_discount numeric,
   taxable boolean,
-  inventory_quantity numeric
+  inventory_quantity numeric,
+  supplier text,
+  sup_name text
 )
 language sql
 stable
@@ -71,6 +73,8 @@ as $$
       products.department_id,
       products.max_discount,
       products.taxable,
+      coalesce(products.supplier, products.supplier_id) as supplier,
+      coalesce(products.sup_name, products.supplier_name) as sup_name,
       coalesce(sum(inventory.quantity) filter (where inventory.quantity > 0), 0) as inventory_quantity,
       normalized.query,
       concat_ws(
@@ -92,6 +96,16 @@ as $$
         search_division_id is null
         or search_division_id = ''
         or product_departments.division_id = search_division_id
+      )
+      and (
+        public.current_app_role()::text in ('admin', 'asesor-comasa', 'asesor-retail')
+        or (
+          public.current_app_role()::text = 'asesor-peinsa'
+          and (
+            coalesce(products.supplier, '') = '1022301'
+            or coalesce(products.supplier_id, '') = '1022301'
+          )
+        )
       )
       and (
         normalized.query = ''
@@ -122,6 +136,10 @@ as $$
       products.department_id,
       products.max_discount,
       products.taxable,
+      products.supplier,
+      products.supplier_id,
+      products.sup_name,
+      products.supplier_name,
       normalized.query
   ),
   scored as (
@@ -159,7 +177,9 @@ as $$
     scored.department_id,
     scored.max_discount,
     scored.taxable,
-    scored.inventory_quantity
+    scored.inventory_quantity,
+    scored.supplier,
+    scored.sup_name
   from scored
   order by
     (scored.inventory_quantity > 0) desc,

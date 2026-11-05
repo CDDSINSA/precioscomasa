@@ -1,9 +1,19 @@
 alter table public.offer_rules drop constraint if exists offer_rules_sku_fkey;
 alter table public.quote_lines drop constraint if exists quote_lines_sku_fkey;
 alter table public.products add column if not exists department_id text;
+alter table public.products add column if not exists supplier text;
+alter table public.products add column if not exists sup_name text;
+alter table public.products add column if not exists supplier_id text;
+alter table public.products add column if not exists supplier_name text;
 
 create index if not exists products_department_id_idx
 on public.products (department_id);
+
+create index if not exists products_supplier_idx
+on public.products (supplier);
+
+create index if not exists products_sup_name_idx
+on public.products (sup_name);
 
 create or replace function public.prepare_catalog_sync()
 returns void
