@@ -3,6 +3,7 @@ import { selectCustomerSegments, NO_ALLOWED_CUSTOMERS } from "./customerSegments
 import { inventoryFeatureEnabled, inventoryStoreId } from "../config/features";
 import type {
   AdminQuote,
+  AppRole,
   AdminQuoteLine,
   Customer,
   ImportedPromotionRow,
@@ -26,6 +27,15 @@ import { readPromotionPages } from "./readPromotionPages";
 import type { DealConfig } from "../types/domain";
 import { applyOfferDetails } from "./offerConfiguration";
 import { readOfferDetails, submitOfferDetails } from "./offerConfigurationStore";
+import {
+  PEINSA_SUPPLIER_ID,
+  isPeinsaSupplier,
+  isSupplierRestrictedRole,
+  restrictProductsForRole,
+} from "../constants/suppliers";
+
+/** Filtro PostgREST: productos cuyo supplier o supplier_id es PEINSA. */
+const peinsaSupplierFilter = `supplier.eq.${PEINSA_SUPPLIER_ID},supplier_id.eq.${PEINSA_SUPPLIER_ID}`;
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabasePublishableKey =
@@ -37,8 +47,6 @@ export const hasSupabaseConfig = Boolean(supabase);
 
 const productSelectColumns =
   "sku,legacy_number,description,unit_of_measure,list_price,part_number,department_id,max_discount,taxable,supplier,sup_name";
-const productSelectColumnsSupplierId =
-  "sku,legacy_number,description,unit_of_measure,list_price,part_number,department_id,max_discount,taxable,supplier_id,supplier_name";
 const standardProductSelectColumns =
   "sku,legacy_number,description,unit_of_measure,list_price,part_number,department_id,max_discount,taxable";
 const legacyProductSelectColumns =
@@ -72,6 +80,7 @@ type ProductSearchOptions = {
   prioritizeInventory?: boolean;
   divisionId?: string;
   storeId?: string;
+  role?: AppRole;
 };
 
 type SyncProgressCallback = (sent: number, total: number, detail?: string) => void;
@@ -555,46 +564,47 @@ export async function loadProductDepartments(): Promise<ProductDepartment[]> {
   return (data as ProductDepartmentRow[]).map(mapProductDepartment);
 }
 
-export async function loadProductsFromSupabase(): Promise<Product[] | null> {
+export async function loadProductsFromSupabase(role?: AppRole): Promise<Product[] | null> {
   if (!supabase) return null;
+  const restricted = isSupplierRestrictedRole(role);
 
-  let response: { data: unknown; error: { code?: string; message: string } | null } = await supabase
-    .from("products")
-    .select(productSelectColumns)
-    .order("description", { ascending: true })
-    .limit(8000);
-
-  if (response.error && isMissingColumnError(response.error)) {
-    response = await supabase
+  const request = (columns: string, withSupplierFilter: boolean) => {
+    let query = supabase!
       .from("products")
-      .select(productSelectColumnsSupplierId)
+      .select(columns)
       .order("description", { ascending: true })
       .limit(8000);
+    if (withSupplierFilter) query = query.or(peinsaSupplierFilter);
+    return query;
+  };
+
+  let response: { data: unknown; error: { code?: string; message: string } | null } =
+    await request(productSelectColumns, restricted);
+
+  if (response.error && isMissingColumnError(response.error)) {
+    // Sin columnas de proveedor no se puede restringir: el rol PEINSA no recibe catálogo.
+    if (restricted) {
+      updateStoredDataStatus("catalog", "error", "Faltan columnas de proveedor en Supabase (ejecute peinsa_role.sql)");
+      return null;
+    }
+    response = await request(standardProductSelectColumns, false);
   }
 
   if (response.error && isMissingColumnError(response.error)) {
-    response = await supabase
-      .from("products")
-      .select(standardProductSelectColumns)
-      .order("description", { ascending: true })
-      .limit(8000);
-  }
-
-  if (response.error && isMissingColumnError(response.error)) {
-    response = await supabase
-      .from("products")
-      .select(legacyProductSelectColumns)
-      .order("description", { ascending: true })
-      .limit(8000);
+    response = await request(legacyProductSelectColumns, false);
   }
 
   const { data, error } = response;
-  if (error || !Array.isArray(data) || !data.length) return null;
-  return (data as ProductRow[]).map(mapProduct);
+  if (error) {
+    if (restricted) updateStoredDataStatus("catalog", "error", error.message);
+    return null;
+  }
+  if (!Array.isArray(data) || !data.length) return null;
+  return restrictProductsForRole(data as ProductRow[], role).map(mapProduct);
 }
 
-export async function searchProductsFromSupabase(term: string, limit = 60): Promise<Product[] | null> {
-  const page = await searchProductPageFromSupabase(term, { limit });
+export async function searchProductsFromSupabase(term: string, limit = 60, role?: AppRole): Promise<Product[] | null> {
+  const page = await searchProductPageFromSupabase(term, { limit, role });
   return page?.products ?? null;
 }
 
@@ -614,16 +624,21 @@ export async function searchProductPageFromSupabase(
       limit,
       offset,
       storeId: options.storeId ?? inventoryStoreId,
+      role: options.role,
     });
     if (inventoryPage) return inventoryPage;
   }
 
+  const restricted = isSupplierRestrictedRole(options.role);
   const departmentIds = options.divisionId ? await loadDepartmentIdsForDivision(options.divisionId) : [];
   if (options.divisionId && !departmentIds.length) return { products: [], hasMore: false };
 
   let request = supabase
     .from("products")
     .select(productSelectColumns);
+
+  // Antes este camino (respaldo cuando la RPC no devuelve filas) no filtraba proveedor.
+  if (restricted) request = request.or(peinsaSupplierFilter);
 
   if (query) {
     const terms = unique([query, ...query.split(/\s+/).filter((item) => item.length >= 2).slice(0, 3)]);
@@ -644,13 +659,15 @@ export async function searchProductPageFromSupabase(
     .order("description", { ascending: true })
     .range(offset, offset + limit);
 
+  if (response.error && isMissingColumnError(response.error) && restricted) return null;
+
   const { data, error } = response.error && isMissingColumnError(response.error)
     ? await buildLegacyProductSearchRequest(query, offset, limit)
     : response;
 
   if (error || !data?.length) return null;
 
-  const products = (data as ProductRow[]).map(mapProduct);
+  const products = restrictProductsForRole(data as ProductRow[], options.role).map(mapProduct);
   return {
     products: sortProductsByRelevance(products.slice(0, limit), query),
     hasMore: products.length > limit,
@@ -659,7 +676,7 @@ export async function searchProductPageFromSupabase(
 
 async function searchProductPageWithInventory(
   query: string,
-  options: { divisionId?: string; limit: number; offset: number; storeId: string },
+  options: { divisionId?: string; limit: number; offset: number; storeId: string; role?: AppRole },
 ): Promise<ProductSearchPage | null> {
   if (!supabase) return null;
 
@@ -676,7 +693,11 @@ async function searchProductPageWithInventory(
   if (error || !data?.length) return null;
 
   const rows = data as ProductSearchInventoryRow[];
-  const pageRows = rows.slice(0, options.limit);
+  const validRows = restrictProductsForRole(rows, options.role);
+  const pageRows = validRows.slice(0, options.limit);
+  if (isSupplierRestrictedRole(options.role) && !pageRows.length) {
+    return { products: [], hasMore: false, inventory: new Map() };
+  }
   return {
     products: pageRows.map(mapProduct),
     hasMore: rows.length > options.limit,
@@ -684,41 +705,34 @@ async function searchProductPageWithInventory(
   };
 }
 
-export async function loadProductsBySkus(skus: string[]): Promise<Product[]> {
+export async function loadProductsBySkus(skus: string[], role?: AppRole): Promise<Product[]> {
   if (!supabase) return [];
 
   const cleanSkus = unique(skus.map((sku) => sku.trim()).filter(Boolean));
   if (!cleanSkus.length) return [];
+  const restricted = isSupplierRestrictedRole(role);
 
-  let response: { data: unknown; error: { code?: string; message: string } | null } = await supabase
-    .from("products")
-    .select(productSelectColumns)
-    .in("sku", cleanSkus);
+  const request = (columns: string) => {
+    let query = supabase!.from("products").select(columns).in("sku", cleanSkus);
+    if (restricted) query = query.or(peinsaSupplierFilter);
+    return query;
+  };
+
+  let response: { data: unknown; error: { code?: string; message: string } | null } =
+    await request(productSelectColumns);
 
   if (response.error && isMissingColumnError(response.error)) {
-    response = await supabase
-      .from("products")
-      .select(productSelectColumnsSupplierId)
-      .in("sku", cleanSkus);
+    if (restricted) return [];
+    response = await request(standardProductSelectColumns);
   }
 
   if (response.error && isMissingColumnError(response.error)) {
-    response = await supabase
-      .from("products")
-      .select(standardProductSelectColumns)
-      .in("sku", cleanSkus);
-  }
-
-  if (response.error && isMissingColumnError(response.error)) {
-    response = await supabase
-      .from("products")
-      .select(legacyProductSelectColumns)
-      .in("sku", cleanSkus);
+    response = await request(legacyProductSelectColumns);
   }
 
   const { data, error } = response;
   if (error || !Array.isArray(data)) return [];
-  return (data as ProductRow[]).map(mapProduct);
+  return restrictProductsForRole(data as ProductRow[], role).map(mapProduct);
 }
 
 export async function loadInventoryForSkus(skus: string[], storeIds: string[] = []): Promise<Map<string, ProductInventory>> {
@@ -807,6 +821,19 @@ export async function syncProductsToSupabase(
   const validProducts = deduplicateProducts(products.filter((product) => product.sku && product.description && product.listPrice > 0));
   if (!validProducts.length) return { ok: false, message: "No hay productos validos para sincronizar." };
 
+  // Verificar ANTES de vaciar la tabla que existen las columnas de proveedor.
+  // Antes se descartaban en silencio y el rol PEINSA quedaba sin catálogo.
+  const supplierColumns = await supabase.from("products").select("supplier,supplier_id,sup_name,supplier_name").limit(1);
+  if (supplierColumns.error && isMissingColumnError(supplierColumns.error)) {
+    return {
+      ok: false,
+      message:
+        "Faltan las columnas de proveedor (supplier, supplier_id) en la tabla products. Ejecute supabase/peinsa_role.sql en Supabase y vuelva a cargar el catálogo. No se modificó el catálogo actual.",
+    };
+  }
+  const peinsaCount = validProducts.filter(isPeinsaSupplier).length;
+  const withSupplier = validProducts.filter((product) => (product.supplierId ?? product.supplier ?? "").trim()).length;
+
   onProgress?.(0, validProducts.length, "Limpiando catálogo anterior");
   const prepared = await prepareCatalogSync();
   if (!prepared.ok) return prepared;
@@ -828,7 +855,13 @@ export async function syncProductsToSupabase(
   });
   if (!uploaded.ok) return uploaded;
 
-  return { ok: true, message: `Sincronización de catálogo completada: ${validProducts.length} productos publicados.` };
+  const supplierNote = !withSupplier
+    ? " Atención: el archivo no trae columna SUPPLIER; el rol asesor-peinsa no verá productos."
+    : ` ${peinsaCount} productos del proveedor PEINSA (${PEINSA_SUPPLIER_ID}).`;
+  return {
+    ok: true,
+    message: `Sincronización de catálogo completada: ${validProducts.length} productos publicados.${supplierNote}`,
+  };
 }
 
 async function prepareCatalogSync() {
@@ -1738,13 +1771,9 @@ function isMissingRpcFunctionError(error: { code?: string; message: string }) {
 
 function isMissingColumnError(error: { code?: string; message: string }) {
   const msg = (error.message ?? "").toLowerCase();
-  return (
-    error.code === "42703" ||
-    error.code === "PGRST204" ||
-    msg.includes("department_id") ||
-    msg.includes("supplier") ||
-    msg.includes("sup_name")
-  );
+  if (error.code === "42703" || error.code === "PGRST204") return true;
+  // Algunos mensajes llegan sin código; solo se aceptan si describen una columna inexistente.
+  return (msg.includes("column") && (msg.includes("does not exist") || msg.includes("could not find")));
 }
 
 function sortProductsByRelevance(products: Product[], query: string) {

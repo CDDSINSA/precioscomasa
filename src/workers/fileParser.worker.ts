@@ -310,7 +310,8 @@ function parseCatalogRows(rows: Record<string, unknown>[]): Product[] {
             "vendor name",
           ]) ?? "",
         ).trim();
-        const supplierId = rawSupplierId || undefined;
+        // Excel puede entregar el ID como número con decimales ("1022301.0").
+        const supplierId = rawSupplierId.replace(/\.0+$/, "") || undefined;
         const supplierName = rawSupplierName || undefined;
 
         return {

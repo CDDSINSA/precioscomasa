@@ -1,4 +1,4 @@
-import type { Product } from "../types/domain";
+import type { AppRole, Product } from "../types/domain";
 import { updateStoredDataStatus } from "./dataStatus";
 import { loadProductsFromSupabase } from "./supabase";
 
@@ -114,11 +114,20 @@ function parseCatalogTsv(text: string): Product[] {
     .filter((product) => product.sku && product.description && product.listPrice > 0);
 }
 
-export async function loadCatalog() {
-  const supabaseCatalog = await loadProductsFromSupabase();
+export async function loadCatalog(role?: AppRole) {
+  const supabaseCatalog = await loadProductsFromSupabase(role);
   if (supabaseCatalog?.length) {
     updateStoredDataStatus("catalog", "ok", `${supabaseCatalog.length} productos`);
     return supabaseCatalog;
+  }
+
+  if (role === "asesor-peinsa") {
+    updateStoredDataStatus(
+      "catalog",
+      "warning",
+      "Sin productos PEINSA (1022301) visibles: revise la columna SUPPLIER del catálogo y la política RLS",
+    );
+    return [];
   }
 
   const url = import.meta.env.VITE_CATALOG_TSV_URL || defaultCatalogUrl;

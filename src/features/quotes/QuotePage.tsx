@@ -10,6 +10,7 @@ import { segments, sampleOfferRules } from "../../services/promotions";
 import { buildQuote, formatCurrency } from "../../services/quote";
 import { allocationLabel, allocationLines } from "../../services/dealEngine";
 import { issueQuote, loadOfferRulesForSkus, loadProductsBySkus } from "../../services/supabase";
+import { PEINSA_SUPPLIER_ID, isSupplierRestrictedRole } from "../../constants/suppliers";
 import type { AppProfile, Customer, OfferRule } from "../../types/domain";
 import type { Product, QuoteItem, QuoteSummary } from "../../types/domain";
 import { CustomerCard } from "./CustomerCard";
@@ -31,12 +32,13 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
   const [confirmIssueOpen, setConfirmIssueOpen] = useState(false);
   const [resumeSkuAfterCustomer, setResumeSkuAfterCustomer] = useState(false);
   const [customer, setCustomer] = useState<Customer | null>(null);
-  const [catalog, setCatalog] = useState(sampleCatalog);
+  const [catalog, setCatalog] = useState<Product[]>(() => profile?.role === "asesor-peinsa" ? [] : sampleCatalog);
   const [offerRules, setOfferRules] = useState<OfferRule[]>(sampleOfferRules);
   const [loadedRulesKey, setLoadedRulesKey] = useState("");
   const [offerLoadError, setOfferLoadError] = useState("");
   const [issuingPdf, setIssuingPdf] = useState(false);
   const [downloadingDraft, setDownloadingDraft] = useState(false);
+  const [restrictedSkus, setRestrictedSkus] = useState<Set<string>>(new Set());
   const [quoteFeedback, setQuoteFeedback] = useState<{ tone: "success" | "warning" | "info"; message: string } | null>(null);
   const quoteScrollRef = useRef<HTMLDivElement>(null);
   const compareScrollRef = useRef<HTMLDivElement>(null);
@@ -52,7 +54,11 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
     () => (compareSegment ? buildQuote(items, compareSegment, offerRules, catalog) : undefined),
     [catalog, compareSegment, items, offerRules],
   );
-  const issueBlocker = quote.pricingError || issueBlockerMessage(customer, segment, quote.lines.length);
+  const blockedSkus = items.map((item) => item.sku.trim()).filter((sku) => sku && restrictedSkus.has(sku));
+  const restrictedMessage = blockedSkus.length
+    ? `Los SKU ${[...new Set(blockedSkus)].join(", ")} no están disponibles para su perfil (solo proveedor PEINSA ${PEINSA_SUPPLIER_ID}). Elimínelos para continuar.`
+    : "";
+  const issueBlocker = restrictedMessage || quote.pricingError || issueBlockerMessage(customer, segment, quote.lines.length);
   const mergeCatalogProducts = useCallback((products: Product[]) => {
     if (!products.length) return;
     setCatalog((current) => {
@@ -64,7 +70,7 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
 
   useEffect(() => {
     let active = true;
-    loadCatalog().then((loadedCatalog) => {
+    loadCatalog(profile?.role).then((loadedCatalog) => {
       if (active) setCatalog(loadedCatalog);
     });
     return () => {
@@ -94,20 +100,29 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
   useEffect(() => {
     let active = true;
     const knownSkus = new Set(catalog.map((product) => product.sku));
-    const missingSkus = skuList.split("|").filter(Boolean).filter((sku) => !knownSkus.has(sku));
+    const missingSkus = skuList.split("|").filter(Boolean).filter((sku) => !knownSkus.has(sku) && !restrictedSkus.has(sku));
 
     if (!missingSkus.length) return () => {
       active = false;
     };
 
-    loadProductsBySkus(missingSkus).then((products) => {
-      if (active) mergeCatalogProducts(products);
+    loadProductsBySkus(missingSkus, profile?.role).then((products) => {
+      if (!active) return;
+      mergeCatalogProducts(products);
+      if (isSupplierRestrictedRole(profile?.role)) {
+        // SKU importados/pegados que no son de PEINSA: RLS no los devuelve.
+        const found = new Set(products.map((product) => product.sku));
+        const notAllowed = missingSkus.filter((sku) => !found.has(sku));
+        if (notAllowed.length) {
+          setRestrictedSkus((current) => new Set([...current, ...notAllowed]));
+        }
+      }
     });
 
     return () => {
       active = false;
     };
-  }, [catalog, mergeCatalogProducts, skuList]);
+  }, [catalog, mergeCatalogProducts, profile?.role, restrictedSkus, skuList]);
 
   function updateItem(index: number, item: Partial<QuoteItem>) {
     setItems((current) => current.map((row, rowIndex) => (rowIndex === index ? { ...row, ...item } : row)));
@@ -309,6 +324,7 @@ export function QuotePage({ profile }: { profile?: AppProfile }) {
           catalog={catalog}
           customer={customer}
           segment={segment}
+          role={profile?.role}
           currentItems={items.map((item) => ({ ...item, sku: item.sku.trim() })).filter((item) => item.sku)}
           inventoryEnabled={inventoryFeatureEnabled}
           onCatalogProductsFound={mergeCatalogProducts}

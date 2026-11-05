@@ -18,8 +18,9 @@ import type { AvailableOfferGroup } from "../../services/promotions";
 import { buildQuote, formatCurrency } from "../../services/quote";
 import { dealDescription, dealSkus } from "../../services/dealConfig";
 import { loadInventoryForSkus, loadOfferRulesForSkus, loadProductDepartments, loadProductsBySkus, searchProductPageFromSupabase } from "../../services/supabase";
-import type { Customer, Product, ProductDepartment, ProductInventory, QuoteItem, OfferRule } from "../../types/domain";
+import type { AppRole, Customer, Product, ProductDepartment, ProductInventory, QuoteItem, OfferRule } from "../../types/domain";
 import { ProductImage } from "./ProductImage";
+import { restrictProductsForRole } from "../../constants/suppliers";
 
 const productSearchPageSize = 36;
 const visibleResultStep = 12;
@@ -28,6 +29,7 @@ type Props = {
   catalog: Product[];
   customer?: Customer | null;
   segment: string;
+  role?: AppRole;
   currentItems?: QuoteItem[];
   inventoryEnabled: boolean;
   onCatalogProductsFound: (products: Product[]) => void;
@@ -40,6 +42,7 @@ export function SkuSearchModal({
   catalog,
   customer,
   segment,
+  role,
   currentItems = [],
   inventoryEnabled,
   onCatalogProductsFound,
@@ -74,7 +77,11 @@ export function SkuSearchModal({
     () => filterProductsByDivision(searchProducts(catalog, term), selectedDepartmentIds, selectedDivisionId).slice(0, 60),
     [catalog, selectedDepartmentIds, selectedDivisionId, term],
   );
-  const candidateResults = remoteResults ?? localResults;
+  const rawCandidateResults = remoteResults ?? localResults;
+  const candidateResults = useMemo(
+    () => restrictProductsForRole(rawCandidateResults, role),
+    [role, rawCandidateResults],
+  );
   const candidateResultsKey = useMemo(() => candidateResults.map((product) => product.sku).join("|"), [candidateResults]);
   const inventoryReady = !inventoryEnabled || !candidateResults.length || inventoryLoadedKey === candidateResultsKey;
   const results = useMemo(
@@ -159,6 +166,7 @@ export function SkuSearchModal({
         limit: productSearchPageSize,
         prioritizeInventory: inventoryEnabled,
         storeId: inventoryStoreId,
+        role,
       }).then((page) => {
         if (!active) return;
         setRemoteResults(page?.products.length ? page.products : null);
@@ -185,7 +193,7 @@ export function SkuSearchModal({
       active = false;
       window.clearTimeout(timer);
     };
-  }, [inventoryEnabled, onCatalogProductsFound, selectedDivisionId, term]);
+  }, [inventoryEnabled, onCatalogProductsFound, role, selectedDivisionId, term]);
 
   function loadMoreResults() {
     if (hasLoadedHiddenResults) {
@@ -202,6 +210,7 @@ export function SkuSearchModal({
       offset: remoteOffset,
       prioritizeInventory: inventoryEnabled,
       storeId: inventoryStoreId,
+      role,
     }).then((page) => {
       if (!page?.products.length) {
         setRemoteHasMore(false);
@@ -300,7 +309,7 @@ export function SkuSearchModal({
       const knownSkus = new Set(catalogRef.current.map((p) => p.sku));
       const companionSkus = [...new Set(rules.flatMap(r => r.deal ? dealSkus(r.deal, r.sku) : [r.sku]))].filter((sku) => sku && !knownSkus.has(sku));
       if (companionSkus.length) {
-        loadProductsBySkus(companionSkus).then((companionProducts) => {
+        loadProductsBySkus(companionSkus, role).then((companionProducts) => {
           if (active && companionProducts.length) {
             onCatalogProductsFound(companionProducts);
           }
@@ -318,7 +327,7 @@ export function SkuSearchModal({
     return () => {
       active = false;
     };
-  }, [hasCustomer, onCatalogProductsFound, quoteSkusKey, selected?.sku, segment]);
+  }, [hasCustomer, onCatalogProductsFound, quoteSkusKey, role, selected?.sku, segment]);
 
   function selectSku(sku: string) {
     setSelectedSku(sku);
