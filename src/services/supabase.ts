@@ -1,6 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
 import { selectCustomerSegments, NO_ALLOWED_CUSTOMERS } from "./customerSegments.mjs";
-import { inventoryFeatureEnabled, inventoryStoreId } from "../config/features";
+import {
+  inventoryFeatureEnabled,
+  inventoryStoreId,
+  supabaseAppSchema,
+  supabaseCommonSchema,
+} from "../config/features";
 import type {
   AdminQuote,
   AppRole,
@@ -41,9 +46,40 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabasePublishableKey =
   import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || import.meta.env.VITE_SUPABASE_ANON_KEY;
 
+/**
+ * Cliente principal. Su esquema por defecto es el de la aplicación (VITE_SUPABASE_APP_SCHEMA,
+ * p. ej. 'g_comasa'), así que supabase.from(...) y supabase.rpc(...) apuntan ahí.
+ * Las tablas maestras compartidas (products, product_departments, stores) se leen con commonDb().
+ */
 export const supabase =
-  supabaseUrl && supabasePublishableKey ? createClient(supabaseUrl, supabasePublishableKey) : null;
+  supabaseUrl && supabasePublishableKey
+    ? createClient(supabaseUrl, supabasePublishableKey, { db: { schema: supabaseAppSchema } })
+    : null;
 export const hasSupabaseConfig = Boolean(supabase);
+
+/**
+ * Cliente apuntando al esquema propio de la aplicación (por defecto 'public').
+ * Cuando el proyecto migre a un esquema dedicado por aplicación, basta con definir
+ * VITE_SUPABASE_APP_SCHEMA en las variables de entorno.
+ */
+export function appDb() {
+  if (!supabase) return null;
+  return supabaseAppSchema !== "public" && typeof supabase.schema === "function"
+    ? supabase.schema(supabaseAppSchema)
+    : supabase;
+}
+
+/**
+ * Cliente apuntando al esquema común compartido por todas las aplicaciones (por defecto 'public').
+ * Cuando las tablas maestras compartidas vivan en el esquema común, basta con definir
+ * VITE_SUPABASE_COMMON_SCHEMA en las variables de entorno.
+ */
+export function commonDb() {
+  if (!supabase) return null;
+  return supabaseCommonSchema !== "public" && typeof supabase.schema === "function"
+    ? supabase.schema(supabaseCommonSchema)
+    : supabase;
+}
 
 const productSelectColumns =
   "sku,legacy_number,description,unit_of_measure,list_price,part_number,department_id,max_discount,taxable,supplier,sup_name";
@@ -542,7 +578,7 @@ export async function loadStores(): Promise<StoreLocation[]> {
   if (!inventoryFeatureEnabled) return [];
   if (!supabase) return sampleStores;
 
-  const { data, error } = await supabase
+  const { data, error } = await commonDb()!
     .from("stores")
     .select("id,name")
     .order("id", { ascending: true });
@@ -554,7 +590,7 @@ export async function loadStores(): Promise<StoreLocation[]> {
 export async function loadProductDepartments(): Promise<ProductDepartment[]> {
   if (!supabase) return [];
 
-  const { data, error } = await supabase
+  const { data, error } = await commonDb()!
     .from("product_departments")
     .select("department_id,department_name,division_id,division_name")
     .order("division_name", { ascending: true })
@@ -569,7 +605,7 @@ export async function loadProductsFromSupabase(role?: AppRole): Promise<Product[
   const restricted = isSupplierRestrictedRole(role);
 
   const request = (columns: string, withSupplierFilter: boolean) => {
-    let query = supabase!
+    let query = commonDb()!
       .from("products")
       .select(columns)
       .order("description", { ascending: true })
@@ -633,7 +669,7 @@ export async function searchProductPageFromSupabase(
   const departmentIds = options.divisionId ? await loadDepartmentIdsForDivision(options.divisionId) : [];
   if (options.divisionId && !departmentIds.length) return { products: [], hasMore: false };
 
-  let request = supabase
+  let request = commonDb()!
     .from("products")
     .select(productSelectColumns);
 
@@ -713,7 +749,7 @@ export async function loadProductsBySkus(skus: string[], role?: AppRole): Promis
   const restricted = isSupplierRestrictedRole(role);
 
   const request = (columns: string) => {
-    let query = supabase!.from("products").select(columns).in("sku", cleanSkus);
+    let query = commonDb()!.from("products").select(columns).in("sku", cleanSkus);
     if (restricted) query = query.or(peinsaSupplierFilter);
     return query;
   };
@@ -823,7 +859,7 @@ export async function syncProductsToSupabase(
 
   // Verificar ANTES de vaciar la tabla que existen las columnas de proveedor.
   // Antes se descartaban en silencio y el rol PEINSA quedaba sin catálogo.
-  const supplierColumns = await supabase.from("products").select("supplier,supplier_id,sup_name,supplier_name").limit(1);
+  const supplierColumns = await commonDb()!.from("products").select("supplier,supplier_id,sup_name,supplier_name").limit(1);
   if (supplierColumns.error && isMissingColumnError(supplierColumns.error)) {
     return {
       ok: false,
@@ -841,7 +877,7 @@ export async function syncProductsToSupabase(
   const excludedColumns = new Set<string>();
   const uploaded = await uploadInChunks(validProducts, 700, onProgress, "Cargando catálogo vigente", async (chunk) => {
     while (true) {
-      const response = await supabase.from("products").insert(chunk.map((p) => productPayload(p, excludedColumns)));
+      const response = await commonDb()!.from("products").insert(chunk.map((p) => productPayload(p, excludedColumns)));
       if (response.error && isMissingColumnError(response.error)) {
         const match = response.error.message.match(/column ["']?([a-zA-Z0-9_]+)["']?|'([a-zA-Z0-9_]+)' column/i);
         const missingCol = match?.[1] || match?.[2];
@@ -952,11 +988,11 @@ export async function syncStoresToSupabase(
   if (!validStores.length) return { ok: false, message: "No hay tiendas validas para sincronizar." };
 
   onProgress?.(0, validStores.length, "Eliminando tiendas anteriores");
-  const deleted = await supabase.from("stores").delete().not("id", "is", null);
+  const deleted = await commonDb()!.from("stores").delete().not("id", "is", null);
   if (deleted.error) return { ok: false, message: deleted.error.message };
 
   const uploaded = await uploadInChunks(validStores, 700, onProgress, "Cargando tiendas vigentes", async (chunk) =>
-    supabase.from("stores").insert(chunk),
+    commonDb()!.from("stores").insert(chunk),
   );
   if (!uploaded.ok) return uploaded;
 
@@ -1731,7 +1767,7 @@ function nextDateIso(value: string) {
 async function loadDepartmentIdsForDivision(divisionId: string) {
   if (!supabase) return [];
 
-  const { data, error } = await supabase
+  const { data, error } = await commonDb()!
     .from("product_departments")
     .select("department_id")
     .eq("division_id", divisionId);
@@ -1743,7 +1779,7 @@ async function loadDepartmentIdsForDivision(divisionId: string) {
 async function buildLegacyProductSearchRequest(query: string, offset: number, limit: number) {
   if (!supabase) return { data: null, error: { message: "Supabase no esta configurado." } };
 
-  let request = supabase
+  let request = commonDb()!
     .from("products")
     .select(legacyProductSelectColumns);
 
@@ -1861,7 +1897,8 @@ function optionalNumber(value: unknown) {
 async function countRows(table: "promotions" | "customers" | "products" | "inventory" | "stores") {
   if (!supabase) return null;
 
-  const { count, error } = await supabase
+  const client = table === "products" || table === "stores" ? commonDb()! : supabase;
+  const { count, error } = await client
     .from(table)
     .select("*", { count: "exact", head: true });
 

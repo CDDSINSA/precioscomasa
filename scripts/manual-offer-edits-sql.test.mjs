@@ -4,10 +4,11 @@ import { pathToFileURL } from "node:url";
 const { PGlite } = await import(pathToFileURL(process.argv[2]).href);
 const db = new PGlite();
 await db.exec(`
-create role anon; create role authenticated; create schema auth;
+  create schema g_comasa; create schema d_comun; set search_path = g_comasa, d_comun, public;
+create role anon; create role authenticated; grant usage on schema g_comasa, d_comun to anon, authenticated; create schema auth;
 create function auth.uid() returns uuid language sql as $$select '00000000-0000-0000-0000-000000000001'::uuid$$;
-create function public.is_admin() returns boolean language sql as $$select coalesce(current_setting('test.admin',true),'yes') <> 'no'$$;
-create table products(sku text primary key);
+create function g_comasa.is_admin() returns boolean language sql as $$select coalesce(current_setting('test.admin',true),'yes') <> 'no'$$;
+create table d_comun.products(sku text primary key);
 create table offer_rules(id uuid primary key default gen_random_uuid(), external_offer_id text, promotion_id text, offer_type text, sku text, segment text,
 min_quantity numeric default 0, fixed_price numeric, discount_percent numeric, discount_type text, promotion_attribute text, allow_stacking boolean,
 threshold_quantity numeric, threshold_type text, is_active boolean default true, updated_at timestamptz default now());

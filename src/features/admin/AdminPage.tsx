@@ -1,6 +1,6 @@
 import { isPendingKit } from "../../services/dealConfig";
 import { CUSTOMER_SEGMENTS_LABEL, customerImportMessage } from "../../services/customerSegments.mjs";
-import { Boxes, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Database, Download, Filter, Landmark, PackageSearch, RefreshCw, Save, Search, SlidersHorizontal, Tags, Trash2, Upload, UsersRound } from "lucide-react";
+import { Boxes, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Database, Download, Filter, Landmark, PackageSearch, RefreshCw, Save, Search, ShieldCheck, SlidersHorizontal, Tags, Trash2, Upload, UsersRound } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
@@ -11,6 +11,7 @@ import { OfferSetEditor } from "./OfferSetEditor";
 import { SimpleOfferEditor } from "./SimpleOfferEditor";
 import { DealEditor } from "./DealEditor";
 import { DeleteOfferModal } from "./DeleteOfferButton";
+import { UserManagementPanel, listAdminUsers } from "./UserManagementPanel";
 import { AppFeedback } from "../../components/AppFeedback";
 import { Badge, Button, Card, CardContent, Header, Metric } from "../../components/ui";
 import { inventoryFeatureEnabled, inventoryStoreId } from "../../config/features";
@@ -40,7 +41,7 @@ import {
   type PromotionSyncMode,
   type RemoteDataMetrics,
 } from "../../services/supabase";
-import type { Customer, ImportedPromotionRow, InventoryRecord, Product, StoreLocation, ThresholdType } from "../../types/domain";
+import type { AdminManagedUser, Customer, ImportedPromotionRow, InventoryRecord, Product, StoreLocation, ThresholdType } from "../../types/domain";
 
 type ProgressState = {
   title: string;
@@ -49,7 +50,7 @@ type ProgressState = {
   total: number;
 };
 
-type ActiveLoad = "promotions" | "offer-settings" | "customers" | "catalog" | "inventory" | "stores";
+type ActiveLoad = "promotions" | "offer-settings" | "customers" | "catalog" | "inventory" | "stores" | "users";
 
 export function AdminPage() {
   const [activeLoad, setActiveLoad] = useState<ActiveLoad>("promotions");
@@ -58,6 +59,10 @@ export function AdminPage() {
   const [catalogRows, setCatalogRows] = useState<Product[]>([]);
   const [inventoryRows, setInventoryRows] = useState<InventoryRecord[]>([]);
   const [storeRows, setStoreRows] = useState<StoreLocation[]>([]);
+  const [adminUsers, setAdminUsers] = useState<AdminManagedUser[]>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [usersWarning, setUsersWarning] = useState<string>();
+  const [usersRefreshKey, setUsersRefreshKey] = useState(0);
   const [message, setMessage] = useState<string>();
   const [progress, setProgress] = useState<ProgressState | null>(null);
   const [syncMode, setSyncMode] = useState<PromotionSyncMode>("full");
@@ -120,6 +125,27 @@ export function AdminPage() {
       });
     return () => { active = false; controller.abort(); };
   }, [activeLoad, offerMetricsRefreshKey]);
+
+  useEffect(() => {
+    let active = true;
+    setUsersLoading(true);
+    listAdminUsers()
+      .then((result) => {
+        if (!active) return;
+        if (result.ok) {
+          setAdminUsers(result.users);
+          setUsersWarning(result.warning);
+        } else {
+          setUsersWarning(result.message);
+        }
+      })
+      .finally(() => {
+        if (active) setUsersLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [usersRefreshKey]);
 
   function refreshSavedOfferConfiguration() {
     setOfferMetricsRefreshKey(key => key + 1);
@@ -390,6 +416,7 @@ export function AdminPage() {
               <ProcessButton active={activeLoad === "offer-settings"} count={offerConfigRows.length} icon={SlidersHorizontal} label="Config. ofertas" onClick={() => { setActiveLoad("offer-settings"); setOfferMetricsRefreshKey(key => key + 1); }} />
               <ProcessButton active={activeLoad === "customers"} count={customerRows.length} icon={UsersRound} label="Clientes" onClick={() => setActiveLoad("customers")} />
               <ProcessButton active={activeLoad === "catalog"} count={catalogRows.length} icon={PackageSearch} label="Catalogo" onClick={() => setActiveLoad("catalog")} />
+              <ProcessButton active={activeLoad === "users"} count={adminUsers.length} icon={ShieldCheck} label="Usuarios" onClick={() => { setActiveLoad("users"); setUsersRefreshKey((key) => key + 1); }} />
               {inventoryFeatureEnabled ? (
                 <>
                   <ProcessButton active={activeLoad === "inventory"} count={inventoryRows.length} icon={Boxes} label="Inventario" onClick={() => setActiveLoad("inventory")} />
@@ -469,7 +496,8 @@ export function AdminPage() {
               ) : null}
 
               {inventoryFeatureEnabled && activeLoad === "stores" ? (
-                <StoresLoadPanel rows={storeRows} preview={storeRows.slice(0, 20)} onFile={handleStoreFile} onSync={syncStores} />
+                <StoresLoadPanel rows={storeRows} preview={storeRows.slice(0, 20)} onFile={handleStoreFile} onSync={syncStores} />) : null}
+              {activeLoad === "users" ? (<UserManagementPanel users={adminUsers} loadingUsers={usersLoading} usersWarning={usersWarning} onRefreshUsers={() => setUsersRefreshKey((key) => key + 1)} onNotify={(msg) => setMessage(msg)} />
               ) : null}
             </div>
           </div>

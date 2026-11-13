@@ -7,6 +7,29 @@ export type AppProfile = {
   role: AppRole;
 };
 
+export type AdminUserProvisionStatus =
+  | "created_all"
+  | "existing_auth_profile_created"
+  | "existing_profile_updated";
+
+export type AdminManagedUser = {
+  id: string;
+  email: string;
+  fullName: string;
+  role: AppRole;
+  createdAt: string;
+  lastSignInAt?: string;
+};
+
+export type AdminEmailLookupResult = {
+  existsInAuth: boolean;
+  existsInApp: boolean;
+  userId?: string;
+  email: string;
+  fullName?: string;
+  role?: AppRole;
+};
+
 export type OfferType =
   | "LINE_ITEM_DISCOUNT"
   | "TIERED_DISCOUNT"

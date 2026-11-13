@@ -1,7 +1,7 @@
 import type { AppRole } from "../types/domain";
 
 export const rolePermissions: Record<AppRole, string[]> = {
-  admin: ["promotions:import", "promotions:configure", "quotes:create"],
+  admin: ["promotions:import", "promotions:configure", "quotes:create", "users:manage"],
   "asesor-comasa": ["quotes:create", "quotes:compare"],
   "asesor-retail": ["quotes:create"],
   "asesor-peinsa": ["quotes:create"],

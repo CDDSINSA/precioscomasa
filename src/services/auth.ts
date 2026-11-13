@@ -1,6 +1,6 @@
 import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 import type { AppProfile, AppRole } from "../types/domain";
-import { supabase } from "./supabase";
+import { appDb, supabase } from "./supabase";
 
 type ProfileRow = {
   id: string;
@@ -76,8 +76,9 @@ export function isPasswordRecoveryUrl() {
 
 export async function getProfile(session: Session | null): Promise<AppProfile | null> {
   if (!supabase || !session?.user) return null;
+  const db = appDb() ?? supabase;
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("app_profiles")
     .select("id, full_name, role")
     .eq("id", session.user.id)
@@ -85,7 +86,7 @@ export async function getProfile(session: Session | null): Promise<AppProfile | 
 
   if (!error && data) return toProfile(data, session.user.email ?? "");
 
-  const ensured = await supabase.rpc("ensure_app_profile");
+  const ensured = await db.rpc("ensure_app_profile");
   const ensuredRow = Array.isArray(ensured.data) ? ensured.data[0] as ProfileRow | undefined : undefined;
 
   return ensured.error || !ensuredRow ? null : toProfile(ensuredRow, session.user.email ?? "");

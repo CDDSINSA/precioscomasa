@@ -7,7 +7,8 @@ import { createClient } from "@supabase/supabase-js";
 
 // Compile the actual application modules without a browser or a database session.
 function loadModule(path, dependencies = {}, globals = {}) {
-  const source = readFileSync(new URL(path, import.meta.url), "utf8");
+  let source = readFileSync(new URL(path, import.meta.url), "utf8");
+  source = source.replace(/import\.meta\.env/g, "({})");
   const { outputText } = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   });
@@ -1014,4 +1015,260 @@ test("global detail reads distinguish a missing migration from operational error
   } });
   assert.equal(await store.readOfferDetails(client("PGRST205"), ["o"]), null);
   await assert.rejects(() => store.readOfferDetails(client("42501"), ["o"]), /configuraciones/);
+});
+
+test("offer configuration panel exposes direct row deletion and modal confirmation with context or global scope", () => {
+  const adminSource = readFileSync(new URL("../src/features/admin/AdminPage.tsx", import.meta.url), "utf8");
+  const deleteSource = readFileSync(new URL("../src/features/admin/DeleteOfferButton.tsx", import.meta.url), "utf8");
+  assert.match(adminSource, /DeleteOfferModal/);
+  assert.match(adminSource, /offer-row-delete-btn/);
+  assert.match(adminSource, /setDeletingOffer\(row\)/);
+  assert.match(deleteSource, /export function DeleteOfferModal/);
+  assert.match(deleteSource, /scope === "context" \? row\.promotionId : null/);
+  assert.match(deleteSource, /supabase\.rpc\("delete_offer"/);
+  assert.match(deleteSource, /Falta instalar supabase\/delete_offers\.sql en Supabase\./);
+});
+
+
+test("Excel worker parses SUPPLIER and SUP_NAME (including SUP_NAM alias) for catalog", async () => {
+  const XLSX = await import("xlsx");
+  const headers = ["item", "item_desc", "standard_uom", "unit_retail", "SUPPLIER", "SUP_NAME"];
+  const sheet = XLSX.utils.aoa_to_sheet([
+    headers,
+    ["SKU001", "Martillo Truper", "EA", 150.5, "1045", "TRUPER SA"],
+    ["SKU002", "Cinta 3M", "EA", 55.0, "2099", "3M GLOBAL"],
+  ]);
+  const workbook = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(workbook, sheet, "Catalogo");
+  const buffer = XLSX.write(workbook, { type: "array", bookType: "xlsx" });
+  let response; const self = { postMessage: value => { response = value; } };
+  loadModule("../src/workers/fileParser.worker.ts", { "read-excel-file/web-worker": {}, xlsx: XLSX, "../services/offerConfiguration": detailModule }, { self });
+  await self.onmessage({ data: { id: "cat1", mode: "catalog", file: { name: "catalogo.xlsx", size: buffer.byteLength, arrayBuffer: async () => buffer } } });
+  assert.equal(response.ok, true);
+  assert.equal(response.result.length, 2);
+  assert.equal(response.result[0].sku, "SKU001");
+  assert.equal(response.result[0].supplierId, "1045");
+  assert.equal(response.result[0].supplier, "1045");
+  assert.equal(response.result[0].supplierName, "TRUPER SA");
+  assert.equal(response.result[0].supName, "TRUPER SA");
+  assert.equal(response.result[1].supplierId, "2099");
+  assert.equal(response.result[1].supplierName, "3M GLOBAL");
+});
+
+test("asesor-peinsa role permissions and navigation are properly configured", () => {
+  const permModule = loadModule("../src/constants/permissions.ts");
+  assert.equal(permModule.can("asesor-peinsa", "quotes:create"), true);
+  assert.equal(permModule.can("asesor-peinsa", "quotes:compare"), false);
+  assert.equal(permModule.can("asesor-peinsa", "promotions:import"), false);
+
+  const navModule = loadModule("../src/constants/navigation.ts", { "lucide-react": {} });
+  const quoteNav = navModule.navigation.find(item => item.path === "/cotizacion");
+  assert.ok(quoteNav?.roles.includes("asesor-peinsa"));
+  const adminNav = navModule.navigation.find(item => item.path === "/administracion");
+  assert.equal(adminNav?.roles.includes("asesor-peinsa"), false);
+});
+
+test("loadCatalog for asesor-peinsa never falls back to public Drive TSV or sample catalog", async () => {
+  const catalogModule = loadModule("../src/services/catalog.ts", {
+    "./dataStatus": { updateStoredDataStatus: () => {} },
+    "./supabase": { loadProductsFromSupabase: async () => null }
+  });
+  const peinsaCatalog = await catalogModule.loadCatalog("asesor-peinsa");
+  assert.equal(peinsaCatalog.length, 0);
+});
+
+test("supplier restriction keeps only PEINSA products for asesor-peinsa", () => {
+  const suppliers = loadModule("../src/constants/suppliers.ts");
+  const rows = [
+    { sku: "1", supplier: "1022301" },
+    { sku: "2", supplier_id: " 1022301 " },
+    { sku: "3", supplierId: "1022301" },
+    { sku: "4", supplier: "999" },
+    { sku: "5" },
+  ];
+  assert.deepEqual(suppliers.restrictProductsForRole(rows, "asesor-peinsa").map((r) => r.sku), ["1", "2", "3"]);
+  assert.equal(suppliers.restrictProductsForRole(rows, "asesor-comasa").length, 5);
+  assert.equal(suppliers.productAllowedForRole({ sku: "4", supplierId: "999" }, "asesor-peinsa"), false);
+});
+
+test("quote page and SKU modal forward the user role to every product query", () => {
+  const page = readFileSync(new URL("../src/features/quotes/QuotePage.tsx", import.meta.url), "utf8");
+  const modal = readFileSync(new URL("../src/features/quotes/SkuSearchModal.tsx", import.meta.url), "utf8");
+  assert.match(page, /<SkuSearchModal[\s\S]*?role=\{profile\?\.role\}/);
+  assert.match(page, /loadProductsBySkus\(missingSkus, profile\?\.role\)/);
+  assert.equal((modal.match(/searchProductPageFromSupabase\([^)]*\{[^}]*\brole,/g) ?? []).length, 2);
+  assert.match(modal, /loadProductsBySkus\(companionSkus, role\)/);
+});
+
+test("direct product search fallback applies the PEINSA supplier filter", () => {
+  const source = readFileSync(new URL("../src/services/supabase.ts", import.meta.url), "utf8");
+  const start = source.indexOf("export async function searchProductPageFromSupabase");
+  const end = source.indexOf("async function searchProductPageWithInventory");
+  const body = source.slice(start, end);
+  assert.match(body, /if \(restricted\) request = request\.or\(peinsaSupplierFilter\)/);
+  assert.match(body, /restrictProductsForRole\(data as ProductRow\[\], options\.role\)/);
+});
+
+
+test("admin user management differentiates existing auth users from brand new users and preserves existing passwords", async () => {
+  const calls = [];
+  const mockDb = {
+    rpc: async (fnName, args) => {
+      calls.push({ fnName, args });
+      if (fnName === "admin_check_user_email") {
+        if (args.target_email === "existente@comasa.com.ni") {
+          return {
+            data: {
+              exists_in_auth: true,
+              exists_in_app: false,
+              user_id: "u-existing",
+              email: args.target_email,
+              full_name: "Colaborador Existente",
+              role: null,
+            },
+            error: null,
+          };
+        }
+        return {
+          data: {
+            exists_in_auth: false,
+            exists_in_app: false,
+            email: args.target_email,
+          },
+          error: null,
+        };
+      }
+      if (fnName === "admin_provision_user") {
+        if (args.user_email === "existente@comasa.com.ni") {
+          return {
+            data: {
+              status: "existing_auth_profile_created",
+              user_id: "u-existing",
+              email: args.user_email,
+              full_name: args.user_full_name || "Colaborador Existente",
+              role: args.user_role,
+            },
+            error: null,
+          };
+        }
+        return {
+          data: {
+            status: "created_all",
+            user_id: "u-new",
+            email: args.user_email,
+            full_name: args.user_full_name,
+            role: args.user_role,
+          },
+          error: null,
+        };
+      }
+      return { data: [], error: null };
+    },
+  };
+
+  const userMgmt = loadModule("../src/services/userManagement.ts", {
+    "./supabase": { appDb: () => mockDb },
+  });
+
+  const existingLookup = await userMgmt.checkAdminUserEmail("Existente@comasa.com.ni ");
+  assert.equal(existingLookup.ok, true);
+  assert.equal(existingLookup.result.existsInAuth, true);
+  assert.equal(existingLookup.result.existsInApp, false);
+  assert.equal(existingLookup.result.fullName, "Colaborador Existente");
+
+  const existingResult = await userMgmt.provisionAdminUser({
+    email: "existente@comasa.com.ni",
+    fullName: "Colaborador Existente",
+    role: "asesor-comasa",
+  });
+  assert.equal(existingResult.ok, true);
+  assert.equal(existingResult.status, "existing_auth_profile_created");
+  assert.match(existingResult.message, /perfil de usuario fue creado/i);
+  assert.match(existingResult.message, /misma contraseña en otras aplicaciones/i);
+
+  const newResult = await userMgmt.provisionAdminUser({
+    email: "nuevo@comasa.com.ni",
+    fullName: "Nuevo Asesor",
+    role: "asesor-retail",
+    password: "ClaveSegura2026!",
+  });
+  assert.equal(newResult.ok, true);
+  assert.equal(newResult.status, "created_all");
+  assert.match(newResult.message, /usuario fue creado/i);
+  assert.match(newResult.message, /aplicable para todas las aplicaciones proporcionadas por el Departamento de Transformación/i);
+});
+
+test("admin page exposes Usuarios section and SQL migration preserves auth.users password when user already exists", () => {
+  const adminSource = readFileSync(new URL("../src/features/admin/AdminPage.tsx", import.meta.url), "utf8");
+  const panelSource = readFileSync(new URL("../src/features/admin/UserManagementPanel.tsx", import.meta.url), "utf8");
+  const sqlSource = readFileSync(new URL("../supabase/admin_users.sql", import.meta.url), "utf8");
+
+  assert.match(adminSource, /label="Usuarios"/);
+  assert.match(adminSource, /<UserManagementPanel/);
+  assert.match(panelSource, /Departamento de Transformación/);
+  assert.match(panelSource, /misma contraseña que utiliza en otras aplicaciones/);
+  assert.match(sqlSource, /create or replace function public\.admin_provision_user/);
+  assert.match(sqlSource, /existing_auth_profile_created/);
+  assert.match(sqlSource, /created_all/);
+  assert.match(sqlSource, /drop trigger if exists on_auth_user_created on auth\.users/);
+});
+
+
+test("listAdminUsers loads existing app_profiles directly even if RPC is not installed and supports editing profile and password", async () => {
+  const rpcCalls = [];
+  const mockDb = {
+    rpc: async (fnName, args) => {
+      rpcCalls.push({ fnName, args });
+      if (fnName === "admin_list_users") {
+        return { data: null, error: { code: "PGRST202", message: "Could not find the function public.admin_list_users" } };
+      }
+      if (fnName === "admin_update_user_profile") {
+        return { data: { updated: true, password_changed: Boolean(args.new_password) }, error: null };
+      }
+      return { data: null, error: null };
+    },
+    from: (table) => ({
+      select: () => {
+        if (table === "app_profiles") {
+          return Promise.resolve({
+            data: [
+              { id: "11111111-1111-1111-1111-111111111111", full_name: "Admin Principal", role: "admin" },
+              { id: "22222222-2222-2222-2222-222222222222", full_name: "Asesor PEINSA", role: "asesor-peinsa" },
+            ],
+            error: null,
+          });
+        }
+        return {
+          in: () => ({
+            limit: () =>
+              Promise.resolve({
+                data: [{ created_by: "22222222-2222-2222-2222-222222222222", generated_by_email: "peinsa@comasa.com.ni" }],
+                error: null,
+              }),
+          }),
+        };
+      },
+    }),
+  };
+
+  const userMgmt = loadModule("../src/services/userManagement.ts", {
+    "./supabase": { appDb: () => mockDb, supabase: null },
+  });
+
+  const listed = await userMgmt.listAdminUsers();
+  assert.equal(listed.ok, true);
+  assert.equal(listed.users.length, 2);
+  assert.ok(listed.warning);
+  const peinsaUser = listed.users.find((u) => u.id === "22222222-2222-2222-2222-222222222222");
+  assert.equal(peinsaUser.email, "peinsa@comasa.com.ni");
+  assert.equal(peinsaUser.role, "asesor-peinsa");
+
+  const updatedWithPwd = await userMgmt.updateAdminUserProfile({
+    userId: "22222222-2222-2222-2222-222222222222",
+    fullName: "Asesor PEINSA Editado",
+    role: "asesor-comasa",
+    newPassword: "NuevaPassword2026!",
+  });
+  assert.equal(updatedWithPwd.ok, true);
+  assert.equal(updatedWithPwd.passwordChanged, true);
+  assert.match(updatedWithPwd.message, /Departamento de Transformación/);
 });

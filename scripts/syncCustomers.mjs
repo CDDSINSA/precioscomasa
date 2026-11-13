@@ -66,6 +66,7 @@ if (!supabaseUrl || !serviceRoleKey) {
 
 const supabase = createClient(supabaseUrl, serviceRoleKey, {
   auth: { persistSession: false, autoRefreshToken: false },
+  db: { schema: process.env.SUPABASE_APP_SCHEMA || "g_comasa" },
 });
 
 await deleteExistingCustomers();
