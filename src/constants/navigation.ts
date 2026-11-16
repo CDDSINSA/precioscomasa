@@ -13,6 +13,7 @@ export const roles = [
   { id: "asesor-comasa", label: "Asesor de ventas COMASA" },
   { id: "asesor-retail", label: "Asesor de ventas retail" },
   { id: "asesor-peinsa", label: "Asesor de ventas PEINSA" },
+  { id: "oper", label: "Operación" },
 ] satisfies { id: AppRole; label: string }[];
 
 export const navigation: NavItem[] = [
@@ -21,7 +22,7 @@ export const navigation: NavItem[] = [
     path: "/administracion",
     label: "Administración",
     icon: Settings2,
-    roles: ["admin"],
+    roles: ["admin", "oper"],
   },
   {
     path: "/cotizaciones",
@@ -33,6 +34,6 @@ export const navigation: NavItem[] = [
     path: "/cotizacion",
     label: "Cotización",
     icon: ClipboardList,
-    roles: ["admin", "asesor-comasa", "asesor-retail", "asesor-peinsa"],
+    roles: ["admin", "asesor-comasa", "asesor-retail", "asesor-peinsa", "oper"],
   },
 ];

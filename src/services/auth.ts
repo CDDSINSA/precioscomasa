@@ -93,5 +93,7 @@ export async function getProfile(session: Session | null): Promise<AppProfile | 
 }
 
 export function defaultPathForRole(role: AppRole) {
-  return role === "admin" ? "/" : "/cotizacion";
+  if (role === "admin") return "/";
+  if (role === "oper") return "/administracion";
+  return "/cotizacion";
 }

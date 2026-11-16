@@ -29,7 +29,7 @@ export default function App() {
   const safePath = profile && allowedPaths.includes(path) ? path : profile ? defaultPathForRole(profile.role) : path;
   const page =
     safePath === "/" ? <HomePage /> :
-    safePath === "/administracion" ? <AdminPage /> :
+    safePath === "/administracion" ? <AdminPage role={profile?.role} /> :
     safePath === "/cotizaciones" ? <AdminQuotesPage /> :
     <QuotePage profile={profile ?? undefined} />;
 

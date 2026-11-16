@@ -1,4 +1,4 @@
-export type AppRole = "admin" | "asesor-comasa" | "asesor-retail" | "asesor-peinsa";
+export type AppRole = "admin" | "asesor-comasa" | "asesor-retail" | "asesor-peinsa" | "oper";
 
 export type AppProfile = {
   id: string;

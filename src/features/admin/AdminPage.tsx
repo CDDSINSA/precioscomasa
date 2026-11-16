@@ -1,20 +1,10 @@
-import { isPendingKit } from "../../services/dealConfig";
-import { CUSTOMER_SEGMENTS_LABEL, customerImportMessage } from "../../services/customerSegments.mjs";
-import { Boxes, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Database, Download, Filter, Landmark, PackageSearch, RefreshCw, Save, Search, ShieldCheck, SlidersHorizontal, Tags, Trash2, Upload, UsersRound } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { Boxes, Landmark, PackageSearch, ShieldCheck, SlidersHorizontal, Tags, UsersRound } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { OfferConfigurationImport, downloadConfigurationTemplate } from "./OfferConfigurationImport";
-import { readOfferDetails } from "../../services/offerConfigurationStore";
-import { supabase } from "../../services/supabase";
-import { OfferSetEditor } from "./OfferSetEditor";
-import { SimpleOfferEditor } from "./SimpleOfferEditor";
-import { DealEditor } from "./DealEditor";
-import { DeleteOfferModal } from "./DeleteOfferButton";
-import { UserManagementPanel, listAdminUsers } from "./UserManagementPanel";
 import { AppFeedback } from "../../components/AppFeedback";
-import { Badge, Button, Card, CardContent, Header, Metric } from "../../components/ui";
+import { Card, CardContent, Header, Metric } from "../../components/ui";
 import { inventoryFeatureEnabled, inventoryStoreId } from "../../config/features";
+import { customerImportMessage } from "../../services/customerSegments.mjs";
+import { updateStoredDataStatus } from "../../services/dataStatus";
 import {
   parseCatalogFile,
   parseCustomerImport,
@@ -22,10 +12,9 @@ import {
   parsePromotionFile,
   parseStoreFile,
 } from "../../services/importers";
-import { updateStoredDataStatus } from "../../services/dataStatus";
 import {
-  loadRemoteDataMetrics,
   loadOfferConfigurationMetrics,
+  loadRemoteDataMetrics,
   refreshRemoteDataStatuses,
   searchOfferConfigurations,
   syncCustomersToSupabase,
@@ -36,24 +25,41 @@ import {
   updateOfferCombinationSetting,
   updateOfferSkuThresholdSetting,
   type OfferConfigurationFilters,
-  type OfferConfigurationRow,
   type OfferConfigurationMetrics,
+  type OfferConfigurationRow,
   type PromotionSyncMode,
   type RemoteDataMetrics,
 } from "../../services/supabase";
-import type { AdminManagedUser, Customer, ImportedPromotionRow, InventoryRecord, Product, StoreLocation, ThresholdType } from "../../types/domain";
-
-type ProgressState = {
-  title: string;
-  detail: string;
-  current: number;
-  total: number;
-};
+import { canManageCustomers, canManageUsers } from "../../constants/permissions";
+import type { AdminManagedUser, AppRole, Customer, ImportedPromotionRow, InventoryRecord, Product, StoreLocation } from "../../types/domain";
+import { UserManagementPanel, listAdminUsers } from "./UserManagementPanel";
+import {
+  ProcessButton,
+  SyncProgressModal,
+  metricValue,
+  uniqueRowsByPromotion,
+  type ProgressState,
+} from "./components/AdminLoadPrimitives";
+import {
+  CatalogLoadPanel,
+  CustomerLoadPanel,
+  InventoryLoadPanel,
+  PromotionLoadPanel,
+  StoresLoadPanel,
+} from "./components/DataLoadPanels";
+import { OfferConfigurationPanel, zeroThresholdAllowed } from "./components/OfferConfigurationPanel";
 
 type ActiveLoad = "promotions" | "offer-settings" | "customers" | "catalog" | "inventory" | "stores" | "users";
 
-export function AdminPage() {
-  const [activeLoad, setActiveLoad] = useState<ActiveLoad>("promotions");
+export function AdminPage({ role }: { role?: AppRole }) {
+  // El rol "oper" carga y actualiza datos, pero no ve clientes ni usuarios.
+  const showCustomers = canManageCustomers(role);
+  const showUsers = canManageUsers(role);
+  const [activeLoadState, setActiveLoad] = useState<ActiveLoad>("promotions");
+  const activeLoad: ActiveLoad =
+    (activeLoadState === "customers" && !showCustomers) || (activeLoadState === "users" && !showUsers)
+      ? "promotions"
+      : activeLoadState;
   const [promotionRows, setPromotionRows] = useState<ImportedPromotionRow[]>([]);
   const [customerRows, setCustomerRows] = useState<Customer[]>([]);
   const [catalogRows, setCatalogRows] = useState<Product[]>([]);
@@ -127,6 +133,7 @@ export function AdminPage() {
   }, [activeLoad, offerMetricsRefreshKey]);
 
   useEffect(() => {
+    if (!showUsers) return;
     let active = true;
     setUsersLoading(true);
     listAdminUsers()
@@ -145,7 +152,7 @@ export function AdminPage() {
     return () => {
       active = false;
     };
-  }, [usersRefreshKey]);
+  }, [showUsers, usersRefreshKey]);
 
   function refreshSavedOfferConfiguration() {
     setOfferMetricsRefreshKey(key => key + 1);
@@ -255,7 +262,7 @@ export function AdminPage() {
   }
 
   async function handleCustomerFile(file?: File) {
-    if (!file) return;
+    if (!file || !showCustomers) return;
     setActiveLoad("customers");
     setProgress({ title: "Leyendo clientes", detail: file.name, current: 0, total: 1 });
     try {
@@ -340,6 +347,7 @@ export function AdminPage() {
   }
 
   async function syncCustomers() {
+    if (!showCustomers) return;
     setProgress({ title: "Sincronizando clientes", detail: "Preparando reemplazo total", current: 0, total: customerRows.length });
     try {
       const result = await syncCustomersToSupabase(customerRows, (current, total, detail) => {
@@ -401,7 +409,7 @@ export function AdminPage() {
 
       <div className="metrics">
         <Metric title="Promos" value={metricValue(remoteMetrics.promotions, metricsLoading)} icon={Tags} />
-        <Metric title="Clientes" value={metricValue(remoteMetrics.customers, metricsLoading)} icon={UsersRound} />
+        {showCustomers ? <Metric title="Clientes" value={metricValue(remoteMetrics.customers, metricsLoading)} icon={UsersRound} /> : null}
         <Metric title="Catalogo" value={metricValue(remoteMetrics.catalog, metricsLoading)} icon={PackageSearch} />
         {inventoryFeatureEnabled ? <Metric title="Inventario" value={metricValue(remoteMetrics.inventory, metricsLoading)} icon={Boxes} /> : null}
       </div>
@@ -414,9 +422,9 @@ export function AdminPage() {
             <div className="load-process-list" aria-label="Procesos de carga">
               <ProcessButton active={activeLoad === "promotions"} count={promotionRows.length} icon={Tags} label="Promociones" onClick={() => setActiveLoad("promotions")} />
               <ProcessButton active={activeLoad === "offer-settings"} count={offerConfigRows.length} icon={SlidersHorizontal} label="Config. ofertas" onClick={() => { setActiveLoad("offer-settings"); setOfferMetricsRefreshKey(key => key + 1); }} />
-              <ProcessButton active={activeLoad === "customers"} count={customerRows.length} icon={UsersRound} label="Clientes" onClick={() => setActiveLoad("customers")} />
+              {showCustomers ? <ProcessButton active={activeLoad === "customers"} count={customerRows.length} icon={UsersRound} label="Clientes" onClick={() => setActiveLoad("customers")} /> : null}
               <ProcessButton active={activeLoad === "catalog"} count={catalogRows.length} icon={PackageSearch} label="Catalogo" onClick={() => setActiveLoad("catalog")} />
-              <ProcessButton active={activeLoad === "users"} count={adminUsers.length} icon={ShieldCheck} label="Usuarios" onClick={() => { setActiveLoad("users"); setUsersRefreshKey((key) => key + 1); }} />
+              {showUsers ? <ProcessButton active={activeLoad === "users"} count={adminUsers.length} icon={ShieldCheck} label="Usuarios" onClick={() => { setActiveLoad("users"); setUsersRefreshKey((key) => key + 1); }} /> : null}
               {inventoryFeatureEnabled ? (
                 <>
                   <ProcessButton active={activeLoad === "inventory"} count={inventoryRows.length} icon={Boxes} label="Inventario" onClick={() => setActiveLoad("inventory")} />
@@ -458,7 +466,7 @@ export function AdminPage() {
                 />
               ) : null}
 
-              {activeLoad === "customers" ? (
+              {showCustomers && activeLoad === "customers" ? (
                 <CustomerLoadPanel
                   rows={customerRows}
                   uniqueCustomers={uniqueCustomers}
@@ -497,7 +505,7 @@ export function AdminPage() {
 
               {inventoryFeatureEnabled && activeLoad === "stores" ? (
                 <StoresLoadPanel rows={storeRows} preview={storeRows.slice(0, 20)} onFile={handleStoreFile} onSync={syncStores} />) : null}
-              {activeLoad === "users" ? (<UserManagementPanel users={adminUsers} loadingUsers={usersLoading} usersWarning={usersWarning} onRefreshUsers={() => setUsersRefreshKey((key) => key + 1)} onNotify={(msg) => setMessage(msg)} />
+              {showUsers && activeLoad === "users" ? (<UserManagementPanel users={adminUsers} loadingUsers={usersLoading} usersWarning={usersWarning} onRefreshUsers={() => setUsersRefreshKey((key) => key + 1)} onNotify={(msg) => setMessage(msg)} />
               ) : null}
             </div>
           </div>
@@ -505,805 +513,6 @@ export function AdminPage() {
       </Card>
 
       {progress ? <SyncProgressModal progress={progress} /> : null}
-    </div>
-  );
-}
-
-function ProcessButton({
-  active,
-  count,
-  icon: Icon,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  count: number;
-  icon: LucideIcon;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button className={active ? "load-process active" : "load-process"} onClick={onClick}>
-      <Icon size={18} />
-      <span>{label}</span>
-      <strong>{count}</strong>
-    </button>
-  );
-}
-
-function PromotionLoadPanel({
-  rows,
-  syncMode,
-  uniqueOffers,
-  uniquePromotions,
-  preview,
-  onFile,
-  onModeChange,
-  onSync,
-}: {
-  rows: ImportedPromotionRow[];
-  syncMode: PromotionSyncMode;
-  uniqueOffers: number;
-  uniquePromotions: number;
-  preview: ImportedPromotionRow[];
-  onFile: (file?: File) => void;
-  onModeChange: (mode: PromotionSyncMode) => void;
-  onSync: () => void;
-}) {
-  return (
-    <LoadPanel
-      title="Promociones"
-      subtitle="Ofertas comerciales de tienda 5."
-      actions={
-        <>
-          <UploadButton label="Cargar archivo" onFile={onFile} />
-          <label className="filter-field compact">
-            <span>Modo</span>
-            <select value={syncMode} onChange={(event) => onModeChange(event.target.value as PromotionSyncMode)}>
-              <option value="full">Carga total</option>
-              <option value="partial">Actualizacion</option>
-            </select>
-          </label>
-          <Button disabled={!rows.length} onClick={onSync}><Save size={16} />Sincronizar</Button>
-        </>
-      }
-      summary={[
-        ["Promociones", uniquePromotions],
-        ["Ofertas", uniqueOffers],
-        ["Filas", rows.length],
-      ]}
-    >
-      <PreviewFrame title="Promociones detectadas">
-        <table>
-          <thead>
-            <tr><th>Promo</th><th>Nombre</th><th>Familia</th><th>Vigencia</th><th>Estado</th></tr>
-          </thead>
-          <tbody>
-            {preview.map((promo) => (
-              <tr key={promo.promotionId}>
-                <td>{promo.promotionId}</td>
-                <td>{promo.promotionName}</td>
-                <td>{promo.segment.trim() === "-" ? "fidelizacion" : "estrategica"}</td>
-                <td>{promo.startsAt || "-"} / {promo.endsAt || "-"}</td>
-                <td><Badge tone={promo.endsAt && promo.endsAt < todayIso() ? "warning" : "success"}>{promo.endsAt && promo.endsAt < todayIso() ? "Vencida" : "Publicable"}</Badge></td>
-              </tr>
-            ))}
-            {!preview.length ? <EmptyRow colSpan={5} label="No hay promociones cargadas." /> : null}
-          </tbody>
-        </table>
-      </PreviewFrame>
-    </LoadPanel>
-  );
-}
-
-function OfferConfigurationPanel({
-  filters,
-  loading,
-  metrics,
-  metricsLoading,
-  metricsError,
-  rows,
-  savingKey,
-  onFilterChange,
-  onSearch,
-  onClear,
-  onSaved,
-  onStackingChange,
-  onThresholdChange,
-  onThresholdSave,
-}: {
-  filters: OfferConfigurationFilters;
-  loading: boolean;
-  metrics: OfferConfigurationMetrics | null;
-  metricsLoading: boolean;
-  metricsError: string;
-  rows: OfferConfigurationRow[];
-  savingKey: string;
-  onFilterChange: (key: keyof OfferConfigurationFilters, value: any) => void;
-  onSearch: () => void;
-  onClear?: () => void;
-  onSaved: () => void;
-  onStackingChange: (row: OfferConfigurationRow, allowStacking: boolean) => void;
-  onThresholdChange: (ruleId: string, patch: Partial<OfferConfigurationRow>) => void;
-  onThresholdSave: (row: OfferConfigurationRow) => void;
-}) {
-  const [editing, setEditing] = useState<OfferConfigurationRow | null>(null);
-  const [editingOffer, setEditingOffer] = useState<string | null>(null);
-  const [editingSimple, setEditingSimple] = useState<OfferConfigurationRow | null>(null);
-  const [deletingOffer, setDeletingOffer] = useState<OfferConfigurationRow | null>(null);
-  const [exportMessage, setExportMessage] = useState("");
-  const [page, setPage] = useState(0);
-  const [pageSize, setPageSize] = useState(50);
-  const [clientFilter, setClientFilter] = useState("");
-  const pendingMetric = metricsLoading ? "…" : "—";
-
-  useEffect(() => {
-    setPage(0);
-  }, [rows]);
-
-  const filteredRows = useMemo(() => {
-    const term = clientFilter.trim().toLowerCase();
-    if (!term) return rows;
-    return rows.filter((row) =>
-      row.offerId.toLowerCase().includes(term) ||
-      row.sku.toLowerCase().includes(term) ||
-      row.promotionId.toLowerCase().includes(term) ||
-      row.promotionName.toLowerCase().includes(term) ||
-      row.segment.toLowerCase().includes(term)
-    );
-  }, [rows, clientFilter]);
-
-  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
-  const currentPage = Math.min(page, totalPages - 1);
-  const paginatedRows = useMemo(() => {
-    return filteredRows.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
-  }, [filteredRows, currentPage, pageSize]);
-
-  return (
-    <LoadPanel
-      className="offer-load-panel"
-      title="Configuración de ofertas"
-      subtitle="Configure condiciones y SET, edite beneficios y productos, o elimine ofertas vigentes."
-      actions={
-        <div className="offer-toolbar-actions">
-          <div className="offer-search-inputs">
-            <label className="filter-field compact">
-              <span>ID promo</span>
-              <input
-                value={filters.promotionId ?? ""}
-                onChange={(event) => onFilterChange("promotionId", event.target.value)}
-                onKeyDown={(event) => { if (event.key === "Enter") onSearch(); }}
-                placeholder="Ej. 1821"
-              />
-            </label>
-            <label className="filter-field compact">
-              <span>ID oferta</span>
-              <input
-                value={filters.offerId ?? ""}
-                onChange={(event) => onFilterChange("offerId", event.target.value)}
-                onKeyDown={(event) => { if (event.key === "Enter") onSearch(); }}
-                placeholder="Ej. 62010"
-              />
-            </label>
-            <label className="filter-field compact">
-              <span>SKU</span>
-              <input
-                value={filters.sku ?? ""}
-                onChange={(event) => onFilterChange("sku", event.target.value)}
-                onKeyDown={(event) => { if (event.key === "Enter") onSearch(); }}
-                placeholder="Código exacto"
-              />
-            </label>
-            <label className="filter-field compact">
-              <span>Límite</span>
-              <select
-                value={filters.limit ?? 100}
-                onChange={(event) => onFilterChange("limit", Number(event.target.value) || undefined)}
-              >
-                <option value={50}>50</option>
-                <option value={100}>100</option>
-                <option value={250}>250</option>
-                <option value={500}>500</option>
-                <option value={0}>Todos</option>
-              </select>
-            </label>
-            <Button onClick={onSearch} disabled={loading}>
-              <Search size={16} />
-              {loading ? "Buscando..." : "Buscar"}
-            </Button>
-            {onClear ? (
-              <Button variant="outline" onClick={onClear} disabled={loading} title="Restablecer filtros">
-                <RefreshCw size={14} />
-                Limpiar
-              </Button>
-            ) : null}
-          </div>
-          <Button
-            variant="outline"
-            disabled={loading || !rows.length}
-            onClick={async () => {
-              if (!supabase) return;
-              try {
-                const details = await readOfferDetails(supabase, rows.map((row) => row.offerId));
-                await downloadConfigurationTemplate(details ?? []);
-                setExportMessage(details?.length ? "Plantilla de condiciones guardadas descargada." : "Sin condiciones globales guardadas; se descargó una plantilla vacía.");
-              } catch (error) {
-                setExportMessage(error instanceof Error ? error.message : "No se pudo exportar.");
-              }
-            }}
-          >
-            <Download size={16} />
-            Exportar condiciones guardadas
-          </Button>
-        </div>
-      }
-      summary={[
-        ["Ofertas", metrics?.offers ?? pendingMetric],
-        ["Oferta-SKU", metrics?.offerSkus ?? pendingMetric],
-        ["Combinables", metrics?.combinable ?? pendingMetric],
-      ]}
-    >
-      {metricsError ? <div className="offer-export-message" role="status">{metricsError}</div> : null}
-      <OfferConfigurationImport onSaved={onSaved} />
-      {exportMessage ? <div className="offer-export-message" role="status">{exportMessage}</div> : null}
-      {editingOffer ? <OfferSetEditor offerId={editingOffer} onClose={() => setEditingOffer(null)} onSaved={() => { setEditingOffer(null); onSaved(); }} /> : null}
-      {editingSimple ? <SimpleOfferEditor row={editingSimple} onClose={() => setEditingSimple(null)} onSaved={() => { setEditingSimple(null); setExportMessage("Oferta actualizada. La próxima carga del reporte reemplazará estos cambios si incluye esta promoción."); onSaved(); }} /> : null}
-      {editing ? <DealEditor row={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); onSaved(); }} /> : null}
-      {deletingOffer ? <DeleteOfferModal row={deletingOffer} onClose={() => setDeletingOffer(null)} onDeleted={(msg) => { setDeletingOffer(null); setExportMessage(msg); onSaved(); }} /> : null}
-      <PreviewFrame title="Ofertas y condiciones" scrollable={false}>
-        {rows.length > 0 ? (
-          <div className="offer-table-toolbar">
-            <div className="offer-table-search">
-              <Filter size={15} />
-              <input
-                type="text"
-                placeholder="Filtrar en resultados (SKU, Oferta, Promo)..."
-                value={clientFilter}
-                onChange={(e) => {
-                  setClientFilter(e.target.value);
-                  setPage(0);
-                }}
-              />
-              {clientFilter ? (
-                <button
-                  type="button"
-                  className="clear-filter-btn"
-                  onClick={() => { setClientFilter(""); setPage(0); }}
-                  title="Limpiar filtro"
-                >
-                  ×
-                </button>
-              ) : null}
-            </div>
-            <div className="offer-table-pagination">
-              <span className="pagination-count">
-                {filteredRows.length === rows.length
-                  ? `Mostrando ${filteredRows.length ? currentPage * pageSize + 1 : 0}–${Math.min((currentPage + 1) * pageSize, filteredRows.length)} de ${rows.length}`
-                  : `Mostrando ${filteredRows.length ? currentPage * pageSize + 1 : 0}–${Math.min((currentPage + 1) * pageSize, filteredRows.length)} de ${filteredRows.length} filtrados (${rows.length} total)`}
-              </span>
-              <label className="pagination-size-label">
-                <span>Filas:</span>
-                <select
-                  value={pageSize}
-                  onChange={(e) => {
-                    setPageSize(Number(e.target.value));
-                    setPage(0);
-                  }}
-                >
-                  <option value={25}>25</option>
-                  <option value={50}>50</option>
-                  <option value={100}>100</option>
-                  <option value={200}>200</option>
-                </select>
-              </label>
-              <div className="pagination-buttons">
-                <Button
-                  variant="ghost"
-                  disabled={currentPage === 0}
-                  onClick={() => setPage(0)}
-                  title="Primera página"
-                >
-                  <ChevronsLeft size={16} />
-                </Button>
-                <Button
-                  variant="ghost"
-                  disabled={currentPage === 0}
-                  onClick={() => setPage((p) => Math.max(0, p - 1))}
-                  title="Página anterior"
-                >
-                  <ChevronLeft size={16} />
-                </Button>
-                <span className="pagination-page-indicator">
-                  {currentPage + 1} / {totalPages}
-                </span>
-                <Button
-                  variant="ghost"
-                  disabled={currentPage >= totalPages - 1}
-                  onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-                  title="Página siguiente"
-                >
-                  <ChevronRight size={16} />
-                </Button>
-                <Button
-                  variant="ghost"
-                  disabled={currentPage >= totalPages - 1}
-                  onClick={() => setPage(totalPages - 1)}
-                  title="Última página"
-                >
-                  <ChevronsRight size={16} />
-                </Button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-        <div className="table-wrap offer-table-scroll" role="region" aria-label="Ofertas y condiciones: tabla desplazable" tabIndex={0}>
-        <table className="settings-table offer-settings-table">
-          <thead>
-            <tr>
-              <th scope="col" className="offer-action-cell">Acción</th>
-              <th scope="col">Promoción</th>
-              <th scope="col">Oferta</th>
-              <th scope="col">SKU</th>
-              <th scope="col">Tipo de oferta</th>
-              <th scope="col">Segmento</th>
-              <th scope="col" className="offer-benefit-cell">Beneficio</th>
-              <th scope="col">Configuración / SET</th>
-              <th scope="col">Combina</th>
-              <th scope="col">Cantidad requerida</th>
-              <th scope="col">Umbral</th>
-              <th scope="col">Guardar condición</th>
-            </tr>
-          </thead>
-          <tbody>
-            {paginatedRows.map((row) => {
-              const combineKey = `combine-${row.promotionId}-${row.offerId}`;
-              const thresholdKey = `threshold-${row.ruleId}`;
-              const minimumThreshold = row.globalDetails ? 1 : zeroThresholdAllowed(row.type) ? 0 : 1;
-              return (
-                <tr key={row.ruleId}>
-                  <td className="offer-action-cell">
-                    <div className="offer-row-actions">
-                      {row.type !== "KIT_OFFER" && (!row.deal || row.deal.kind === "UNIT") ? <Button variant="outline" onClick={() => setEditingSimple(row)} aria-label={`Editar oferta ${row.offerId}, promoción ${row.promotionId}, segmento ${row.segment.trim() === "-" ? "Todos" : row.segment}`}>Editar oferta</Button> : <small>Ver configuración</small>}
-                      <button type="button" className="btn btn-outline offer-row-delete-btn" onClick={() => setDeletingOffer(row)} title={`Borrar oferta ${row.offerId}`} aria-label={`Borrar oferta ${row.offerId}, promoción ${row.promotionId}, segmento ${row.segment.trim() === "-" ? "Todos" : row.segment}`}><Trash2 size={14} aria-hidden="true" /><span>Borrar</span></button>
-                    </div>
-                  </td>
-                  <td className="offer-promotion-cell">
-                    <strong>{row.promotionId}</strong>
-                    <span title={row.promotionName}>{row.promotionName}</span>
-                    <span>{row.startsAt ?? "Sin inicio"} — {row.endsAt ?? "Sin vencimiento"}</span>
-                  </td>
-                  <td>{row.offerId}</td>
-                  <td>{row.sku}</td>
-                  <td><Badge tone="info">{offerTypeLabel(row.type)}</Badge></td>
-                  <td title={`Segmento almacenado: ${JSON.stringify(row.segment)}`}>{row.segment.trim() === "-" ? "Todos" : row.segment}</td>
-                  <td className="offer-benefit-cell"><strong>{offerValueLabel(row)}</strong></td>
-                  <td className="offer-condition-cell">
-                    <div className="offer-condition-content">
-                      {row.deal?.kind === "KIT" && row.deal.sets ? row.deal.sets.filter(set => set.skus.includes(row.sku)).map(set => <small key={set.id}>SET {set.id} · {set.quantity} · {set.thresholdType === "EXACT" ? "Exacto" : "Mínimo"}</small>) : null}
-                      {row.globalDetails ? row.type === "KIT_OFFER" ? <Button variant="outline" onClick={() => setEditingOffer(row.offerId)}>Configurar SET</Button> : <small>Por cantidad y umbral</small> : <Button variant="outline" onClick={() => setEditing(row)}>{row.deal ? "Editar regla anterior" : "Definir regla anterior"}</Button>}
-                      {isPendingKit(row) ? <small className="offer-pending-note">Pendiente de configurar SET</small> : null}
-                    </div>
-                  </td>
-                  <td>
-                    <label className="inline-toggle">
-                      <input
-                        type="checkbox"
-                        aria-label={`Combinar oferta ${row.offerId}`}
-                        checked={row.allowStacking}
-                        disabled={savingKey === combineKey}
-                        onChange={(event) => onStackingChange(row, event.target.checked)}
-                      />
-                      <span>{row.allowStacking ? "Sí" : "No"}</span>
-                    </label>
-                  </td>
-                  <td className="offer-quantity-cell">
-                    <input
-                      type="number"
-                      aria-label={`Cantidad para oferta ${row.offerId}, SKU ${row.sku}`}
-                      step={row.globalDetails ? 1 : "any"}
-                      min={minimumThreshold}
-                      disabled={row.type === "KIT_OFFER" || row.deal?.kind === "KIT"}
-                      value={row.thresholdQuantity}
-                      onChange={(event) => onThresholdChange(row.ruleId, { thresholdQuantity: Math.max(minimumThreshold, Number(event.target.value) || 0) })}
-                    />
-                    <small>{row.type === "KIT_OFFER" || row.deal?.kind === "KIT" ? "Configurar cantidades en cada SET" : `Reporte: ${row.importedQuantity ?? "-"}`}</small>
-                  </td>
-                  <td className="offer-threshold-cell">
-                    <select
-                      aria-label={`Umbral para oferta ${row.offerId}, SKU ${row.sku}`}
-                      value={!row.globalDetails && zeroThresholdAllowed(row.type) ? "MINIMUM" : row.thresholdType}
-                      disabled={(!row.globalDetails && zeroThresholdAllowed(row.type)) || row.type === "KIT_OFFER" || row.deal?.kind === "KIT"}
-                      onChange={(event) => onThresholdChange(row.ruleId, { thresholdType: event.target.value as ThresholdType })}
-                    >
-                      <option value="EXACT">Exacta</option>
-                      <option value="MINIMUM">Mínima</option>
-                    </select>
-                  </td>
-                  <td className="offer-save-cell">
-                    <Button
-                      variant="outline"
-                      aria-label={`Guardar condición de oferta ${row.offerId}, SKU ${row.sku}`}
-                      onClick={() => onThresholdSave(row)}
-                      disabled={savingKey === thresholdKey || row.type === "KIT_OFFER" || row.deal?.kind === "KIT"}
-                    >
-                      <Save size={16} />
-                      {savingKey === thresholdKey ? "Guardando" : "Guardar"}
-                    </Button>
-                  </td>
-                </tr>
-              );
-            })}
-            {!rows.length ? <EmptyRow colSpan={12} label={loading ? "Buscando ofertas..." : "Busque por ID de promo u oferta para configurar."} /> : null}
-            {rows.length > 0 && filteredRows.length === 0 ? <EmptyRow colSpan={12} label="No hay filas que coincidan con el filtro en resultados." /> : null}
-          </tbody>
-        </table>
-        </div>
-        {totalPages > 1 ? (
-          <div className="offer-table-bottom-pagination">
-            <span className="pagination-count">
-              Página {currentPage + 1} de {totalPages} ({filteredRows.length} filas)
-            </span>
-            <div className="pagination-buttons">
-              <Button
-                variant="outline"
-                disabled={currentPage === 0}
-                onClick={() => setPage(0)}
-              >
-                Primera
-              </Button>
-              <Button
-                variant="outline"
-                disabled={currentPage === 0}
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
-              >
-                Anterior
-              </Button>
-              <span className="pagination-page-indicator">
-                {currentPage + 1} / {totalPages}
-              </span>
-              <Button
-                variant="outline"
-                disabled={currentPage >= totalPages - 1}
-                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-              >
-                Siguiente
-              </Button>
-              <Button
-                variant="outline"
-                disabled={currentPage >= totalPages - 1}
-                onClick={() => setPage(totalPages - 1)}
-              >
-                Última
-              </Button>
-            </div>
-          </div>
-        ) : null}
-      </PreviewFrame>
-    </LoadPanel>
-  );
-}
-
-function offerTypeLabel(type: string) {
-  const labels: Record<string, string> = {
-    LINE_ITEM_DISCOUNT: "Descuento línea",
-    TIERED_DISCOUNT: "Escalonada",
-    FIXED_QTY_PRICE: "Precio fijo",
-    KIT_OFFER: "Kit",
-  };
-  return labels[type] ?? type;
-}
-
-function zeroThresholdAllowed(type: string) {
-  return type === "LINE_ITEM_DISCOUNT" || type === "FIXED_QTY_PRICE";
-}
-
-function offerValueLabel(row: OfferConfigurationRow) {
-  if (row.fixedPrice !== undefined) return `Precio ${row.fixedPrice.toLocaleString("es-NI")}`;
-  if (row.discountPercent !== undefined) return `${row.discountPercent}%`;
-  return row.discountType || "-";
-}
-
-function CustomerLoadPanel({
-  rows,
-  uniqueCustomers,
-  uniqueSegments,
-  rowsWithPhone,
-  rowsWithEmail,
-  preview,
-  onFile,
-  onSync,
-}: {
-  rows: Customer[];
-  uniqueCustomers: number;
-  uniqueSegments: number;
-  rowsWithPhone: number;
-  rowsWithEmail: number;
-  preview: Customer[];
-  onFile: (file?: File) => void;
-  onSync: () => void;
-}) {
-  return (
-    <LoadPanel
-      title="Clientes"
-      subtitle={`Base usada por búsqueda y segmento base del cotizador. Solo segmentos ${CUSTOMER_SEGMENTS_LABEL}. Cada carga reemplaza la base completa de clientes.`}
-      actions={<><UploadButton label="Cargar archivo" onFile={onFile} /><Button disabled={!rows.length} onClick={onSync}><Database size={16} />Actualizar clientes</Button></>}
-      summary={[
-        ["Clientes", uniqueCustomers],
-        ["Segmentos", uniqueSegments],
-        ["Con correo", rowsWithEmail],
-        ["Con teléfono", rowsWithPhone],
-      ]}
-    >
-      <PreviewFrame title="Clientes detectados">
-        <table>
-          <thead>
-            <tr><th>ID cliente</th><th>Nombre</th><th>Correo</th><th>Teléfono</th><th>ID / Cédula</th><th>Segmento</th><th>Dirección</th></tr>
-          </thead>
-          <tbody>
-            {preview.map((customer) => (
-              <tr key={customer.customerId}>
-                <td>{customer.customerId}</td><td>{customer.displayName}</td><td>{customer.email ?? "-"}</td><td>{customer.mobile ?? "-"}</td>
-                <td>{customer.nationalId ?? "-"}</td><td>{customer.segment || "-"}</td><td>{customer.address ?? "-"}</td>
-              </tr>
-            ))}
-            {!preview.length ? <EmptyRow colSpan={7} label="No hay clientes cargados." /> : null}
-          </tbody>
-        </table>
-      </PreviewFrame>
-    </LoadPanel>
-  );
-}
-
-function CatalogLoadPanel({
-  rows,
-  uniqueDepartments,
-  uniqueSkus,
-  uniqueSuppliers,
-  preview,
-  onFile,
-  onSync,
-}: {
-  rows: Product[];
-  uniqueDepartments: number;
-  uniqueSkus: number;
-  uniqueSuppliers: number;
-  preview: Product[];
-  onFile: (file?: File) => void;
-  onSync: () => void;
-}) {
-  return (
-    <LoadPanel
-      title="Catalogo"
-      subtitle="Maestro de SKU, descripcion, departamento, proveedor, unidad, precio y numero de parte."
-      actions={<><UploadButton label="Cargar catálogo" onFile={onFile} /><Button disabled={!rows.length} onClick={onSync}><PackageSearch size={16} />Actualizar catálogo</Button></>}
-      summary={[
-        ["SKU", uniqueSkus],
-        ["Con precio", rows.filter((row) => row.listPrice > 0).length],
-        ["Departamentos", uniqueDepartments],
-        ["Proveedores", uniqueSuppliers],
-      ]}
-    >
-      <PreviewFrame title="Productos detectados">
-        <table>
-          <thead>
-            <tr>
-              <th>SKU</th>
-              <th>Descripción</th>
-              <th>Depto.</th>
-              <th>ID Prov.</th>
-              <th>Proveedor</th>
-              <th>U/M</th>
-              <th>Precio unitario</th>
-              <th>Número parte</th>
-            </tr>
-          </thead>
-          <tbody>
-            {preview.map((product) => (
-              <tr key={product.sku}>
-                <td>{product.sku}</td>
-                <td>{product.description}</td>
-                <td>{product.departmentId ?? "-"}</td>
-                <td>{product.supplierId ?? product.supplier ?? "-"}</td>
-                <td>{product.supplierName ?? product.supName ?? "-"}</td>
-                <td>{product.unitOfMeasure ?? "-"}</td>
-                <td>{product.listPrice.toLocaleString("es-NI")}</td>
-                <td>{product.partNumber ?? "-"}</td>
-              </tr>
-            ))}
-            {!preview.length ? <EmptyRow colSpan={8} label="No hay catálogo cargado." /> : null}
-          </tbody>
-        </table>
-      </PreviewFrame>
-    </LoadPanel>
-  );
-}
-
-function InventoryLoadPanel({
-  rows,
-  uniqueSkus,
-  uniqueStores,
-  totalUnits,
-  preview,
-  onFile,
-  onSync,
-}: {
-  rows: InventoryRecord[];
-  uniqueSkus: number;
-  uniqueStores: number;
-  totalUnits: number;
-  preview: InventoryRecord[];
-  onFile: (file?: File) => void;
-  onSync: () => void;
-}) {
-  return (
-    <LoadPanel
-      title="Inventario"
-      subtitle="Existencias de tienda 1041 por SKU. Cada carga reemplaza la base completa."
-      actions={<><UploadButton label="Cargar inventario" onFile={onFile} /><Button disabled={!rows.length} onClick={onSync}><Boxes size={16} />Actualizar inventario</Button></>}
-      summary={[
-        ["SKU", uniqueSkus],
-        ["Tiendas", uniqueStores],
-        ["Unidades", totalUnits.toLocaleString("es-NI")],
-      ]}
-    >
-      <PreviewFrame title="Inventario detectado">
-        <table>
-          <thead>
-            <tr><th>Tienda</th><th>SKU</th><th>Inventario</th></tr>
-          </thead>
-          <tbody>
-            {preview.map((record) => (
-              <tr key={`${record.storeId}-${record.sku}`}>
-                <td>{record.storeId}</td><td>{record.sku}</td><td>{record.quantity.toLocaleString("es-NI")}</td>
-              </tr>
-            ))}
-            {!preview.length ? <EmptyRow colSpan={3} label="No hay inventario cargado." /> : null}
-          </tbody>
-        </table>
-      </PreviewFrame>
-    </LoadPanel>
-  );
-}
-
-function StoresLoadPanel({
-  rows,
-  preview,
-  onFile,
-  onSync,
-}: {
-  rows: StoreLocation[];
-  preview: StoreLocation[];
-  onFile: (file?: File) => void;
-  onSync: () => void;
-}) {
-  return (
-    <LoadPanel
-      title="Tiendas"
-      subtitle="Catalogo de tiendas usado como soporte interno del inventario."
-      actions={<><UploadButton label="Cargar tiendas" onFile={onFile} /><Button disabled={!rows.length} onClick={onSync}><Landmark size={16} />Actualizar tiendas</Button></>}
-      summary={[
-        ["Tiendas", rows.length],
-        ["Con nombre", rows.filter((row) => row.name).length],
-        ["Fuente", rows.length ? "Lista" : "Pendiente"],
-      ]}
-    >
-      <PreviewFrame title="Tiendas detectadas">
-        <table>
-          <thead>
-            <tr><th>ID</th><th>Nombre tienda</th></tr>
-          </thead>
-          <tbody>
-            {preview.map((store) => (
-              <tr key={store.id}><td>{store.id}</td><td>{store.name}</td></tr>
-            ))}
-            {!preview.length ? <EmptyRow colSpan={2} label="No hay tiendas cargadas." /> : null}
-          </tbody>
-        </table>
-      </PreviewFrame>
-    </LoadPanel>
-  );
-}
-
-function LoadPanel({
-  actions,
-  children,
-  className,
-  subtitle,
-  summary,
-  title,
-}: {
-  actions: ReactNode;
-  children: ReactNode;
-  className?: string;
-  subtitle: string;
-  summary: Array<[string, string | number]>;
-  title: string;
-}) {
-  return (
-    <div className={`load-panel ${className ?? ""}`.trim()}>
-      <div className="load-panel-head">
-        <div>
-          <h2>{title}</h2>
-          <span>{subtitle}</span>
-        </div>
-        <div className="toolbar-actions">{actions}</div>
-      </div>
-      <div className="load-summary-grid">
-        {summary.map(([label, value]) => <SummaryTile key={label} label={label} value={String(value)} />)}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function UploadButton({ label, onFile }: { label: string; onFile: (file?: File) => void }) {
-  return (
-    <label className="btn btn-outline file-btn">
-      <Upload size={16} />
-      {label}
-      <input type="file" accept=".xlsx,.xlsb,.xls,.csv,.tsv" onChange={(event) => onFile(event.target.files?.[0])} />
-    </label>
-  );
-}
-
-function SummaryTile({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="summary-tile">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function PreviewFrame({ children, title, scrollable = true }: { children: ReactNode; title: string; scrollable?: boolean }) {
-  return (
-    <div className="preview-frame">
-      <div className="preview-head"><h3>{title}</h3></div>
-      {scrollable ? <div className="table-wrap">{children}</div> : children}
-    </div>
-  );
-}
-
-function EmptyRow({ colSpan, label }: { colSpan: number; label: string }) {
-  return <tr><td colSpan={colSpan}>{label}</td></tr>;
-}
-
-function uniqueRowsByPromotion(rows: ImportedPromotionRow[]) {
-  const grouped = new Map<string, ImportedPromotionRow>();
-  rows.forEach((row) => {
-    if (row.promotionId && !grouped.has(row.promotionId)) grouped.set(row.promotionId, row);
-  });
-  return [...grouped.values()];
-}
-
-function metricValue(value: number | null, loading: boolean) {
-  if (loading && value === null) return "...";
-  if (value === null) return "N/D";
-  return value.toLocaleString("es-NI");
-}
-
-function todayIso() {
-  const now = new Date();
-  const localTime = now.getTime() - now.getTimezoneOffset() * 60000;
-  return new Date(localTime).toISOString().slice(0, 10);
-}
-
-function SyncProgressModal({ progress }: { progress: ProgressState }) {
-  const percent = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
-
-  return (
-    <div className="modal-backdrop" role="status" aria-live="polite">
-      <div className="sync-modal">
-        <div className="sync-led" />
-        <div>
-          <h2>{progress.title}</h2>
-          <p>{progress.detail}</p>
-        </div>
-        <div className="sync-bar">
-          <span style={{ width: `${percent}%` }} />
-        </div>
-        <strong>{percent}%</strong>
-      </div>
     </div>
   );
 }

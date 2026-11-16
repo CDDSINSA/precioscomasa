@@ -1428,3 +1428,17 @@
 
   .customer-result-meta { justify-content: flex-start; }
 }
+
+/* Rol Operación: selector de segmento en lugar de la tarjeta de cliente */
+.quote-segment-select {
+  display: grid;
+  gap: 6px;
+  max-width: 320px;
+  margin-bottom: 12px;
+}
+
+.quote-segment-select span {
+  color: var(--color-muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
