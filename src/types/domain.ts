@@ -86,6 +86,9 @@ export type ProductDepartment = {
 export type StoreLocation = {
   id: string;
   name: string;
+  storeType?: string;
+  storeFormat?: string;
+  location?: string;
 };
 
 export type InventoryRecord = {

@@ -13,7 +13,7 @@ const supabasePublishableKey =
 /**
  * Cliente principal. Su esquema por defecto es el de la aplicación (VITE_SUPABASE_APP_SCHEMA,
  * p. ej. 'g_comasa'), así que supabase.from(...) y supabase.rpc(...) apuntan ahí.
- * Las tablas maestras compartidas (products, product_departments, stores) se leen con commonDb().
+ * Las tablas maestras compartidas (products, product_departments, stores, inventory) se leen con commonDb().
  */
 export const supabase =
   supabaseUrl && supabasePublishableKey
@@ -114,10 +114,13 @@ export async function loadRemoteDataMetrics(): Promise<RemoteDataMetrics> {
 async function countRows(table: "promotions" | "customers" | "products" | "inventory" | "stores") {
   if (!supabase) return null;
 
-  const client = table === "products" || table === "stores" ? commonDb()! : supabase;
+  // products, stores e inventory viven en el esquema común (d_comun).
+  const client = table === "products" || table === "stores" || table === "inventory" ? commonDb()! : supabase;
+  // El inventario es enorme: se usa el conteo estimado del planificador para no agotar el tiempo límite.
   const { count, error } = await client
     .from(table)
-    .select("*", { count: "exact", head: true });
+    .select("*", { count: table === "inventory" ? "estimated" : "exact", head: true })
+    .abortSignal(AbortSignal.timeout(15000));
 
   return error ? null : count ?? 0;
 }

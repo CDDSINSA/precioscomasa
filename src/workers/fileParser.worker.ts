@@ -356,6 +356,9 @@ function parseStoreRows(rows: Record<string, unknown>[]): StoreLocation[] {
       return {
         id: String(pick(data, ["id tienda", "id", "store_id", "loc"]) ?? data[0] ?? "").trim(),
         name: String(pick(data, ["nombre tienda", "nombre", "store_name", "name"]) ?? data[1] ?? "").trim(),
+        storeType: String(pick(data, ["tipo tienda", "tipo", "store_type"]) ?? "").trim(),
+        storeFormat: String(pick(data, ["formato tienda", "formato", "store_format"]) ?? "").trim(),
+        location: String(pick(data, ["ubicacion", "ubicación", "location"]) ?? "").trim(),
       };
     })
     .filter((store) => store.id && store.name);

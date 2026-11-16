@@ -78,6 +78,9 @@ type InventoryRow = {
 type StoreRow = {
   id: string;
   name: string;
+  store_type?: string | null;
+  store_format?: string | null;
+  location?: string | null;
 };
 
 type ProductDepartmentRow = {
@@ -103,7 +106,7 @@ export async function loadStores(): Promise<StoreLocation[]> {
     .order("id", { ascending: true });
 
   if (error || !data) return sampleStores;
-  return (data as StoreRow[]).map((store) => ({ id: store.id, name: store.name }));
+  return (data as StoreRow[]).map(mapStoreRow);
 }
 
 export async function loadProductDepartments(): Promise<ProductDepartment[]> {
@@ -297,7 +300,8 @@ export async function loadInventoryForSkus(skus: string[], storeIds: string[] = 
   const cleanSkus = unique(skus.map((sku) => sku.trim()).filter(Boolean));
   if (!cleanSkus.length) return new Map();
 
-  let request = supabase
+  // El inventario vive en el esquema común (d_comun.inventory), compartido por todas las tiendas.
+  let request = commonDb()!
     .from("inventory")
     .select("store_id,sku,quantity")
     .in("sku", cleanSkus)
@@ -305,7 +309,7 @@ export async function loadInventoryForSkus(skus: string[], storeIds: string[] = 
 
   if (storeIds.length) request = request.in("store_id", storeIds);
 
-  const { data, error } = await request;
+  const { data, error } = await request.abortSignal(AbortSignal.timeout(INVENTORY_READ_TIMEOUT_MS));
   if (error || !data) return new Map();
   const storeMap = new Map((await loadStores()).map((store) => [store.id, store.name]));
   return mapInventory(data as InventoryRow[], storeMap);
@@ -397,25 +401,40 @@ export async function syncInventoryToSupabase(
   }
 
   const client = supabase;
-  const validRecords = deduplicateInventory(
-    records.filter((record) => record.storeId === inventoryStoreId && record.sku),
-  );
+  // Reemplazo total de d_comun.inventory: se publican TODAS las tiendas del archivo,
+  // porque otras aplicaciones usan el inventario del resto de tiendas.
+  const validRecords = deduplicateInventory(records.filter((record) => record.storeId && record.sku));
   if (!validRecords.length) {
-    return { ok: false, message: `No hay inventario valido de tienda ${inventoryStoreId} para sincronizar.` };
+    return { ok: false, message: "No hay inventario valido para sincronizar." };
   }
+  const storeCount = new Set(validRecords.map((record) => record.storeId)).size;
 
-  onProgress?.(0, validRecords.length, "Limpiando inventario anterior");
+  onProgress?.(0, validRecords.length, "Limpiando inventario anterior (todas las tiendas)");
   const prepared = await prepareInventorySync();
   if (!prepared.ok) return prepared;
 
-  const uploaded = await uploadInChunks(validRecords, 900, onProgress, "Cargando inventario vigente", async (chunk) =>
-    client.from("inventory").insert(chunk.map(inventoryPayload)),
+  const uploaded = await uploadInChunks(
+    validRecords,
+    INVENTORY_CHUNK_SIZE,
+    onProgress,
+    "Cargando inventario vigente",
+    async (chunk) =>
+      withRetries(() =>
+        client
+          .rpc("load_inventory_chunk", { rows: chunk.map(inventoryPayload) })
+          .abortSignal(AbortSignal.timeout(INVENTORY_CHUNK_TIMEOUT_MS)),
+      ),
   );
-  if (!uploaded.ok) return uploaded;
+  if (!uploaded.ok) {
+    return {
+      ok: false,
+      message: `${inventoryRpcMessage(uploaded.message)} El inventario quedo incompleto: vuelva a ejecutar la carga completa.`,
+    };
+  }
 
   return {
     ok: true,
-    message: `Sincronizacion de inventario completada: ${validRecords.length} registros de tienda ${inventoryStoreId} publicados.`,
+    message: `Sincronizacion de inventario completada: ${validRecords.length} registros de ${storeCount} tiendas publicados.`,
   };
 }
 
@@ -424,18 +443,79 @@ async function prepareInventorySync() {
     return { ok: false, message: "Supabase no esta configurado en este entorno." };
   }
 
-  const prepared = await supabase.rpc("prepare_inventory_sync");
+  const client = supabase;
+  const prepared = await withRetries(() =>
+    client.rpc("prepare_inventory_sync").abortSignal(AbortSignal.timeout(INVENTORY_PREPARE_TIMEOUT_MS)),
+  );
   if (!prepared.error) return { ok: true, message: "Inventario anterior limpiado." };
 
   if (isMissingRpcFunctionError(prepared.error)) {
     return {
       ok: false,
       message:
-        "Falta ejecutar la funcion prepare_inventory_sync en Supabase. Ejecute supabase/inventory_sync.sql y vuelva a intentar la carga del inventario.",
+        "Falta ejecutar supabase/inventario_d_comun.sql en Supabase y vuelva a intentar la carga del inventario.",
     };
   }
 
-  return { ok: false, message: prepared.error.message };
+  return { ok: false, message: inventoryRpcMessage(prepared.error.message) };
+}
+
+/** Tamaño de lote y tiempos límite para la carga de inventario (la tabla es muy grande). */
+const INVENTORY_CHUNK_SIZE = 2000;
+const INVENTORY_PREPARE_TIMEOUT_MS = 330_000; // la función tiene statement_timeout de 300 s
+const INVENTORY_CHUNK_TIMEOUT_MS = 150_000; // la función tiene statement_timeout de 120 s
+const INVENTORY_READ_TIMEOUT_MS = 20_000;
+const INVENTORY_MAX_ATTEMPTS = 3;
+
+type RpcLikeResponse = { error: { code?: string; message: string } | null };
+
+/**
+ * Reintenta solo errores transitorios (tiempo agotado, red, 5xx, bloqueo ocupado).
+ * Es seguro reintentar porque load_inventory_chunk hace upsert por (store_id, sku)
+ * y prepare_inventory_sync solo vacía la tabla.
+ */
+async function withRetries<T extends RpcLikeResponse>(run: () => PromiseLike<T>): Promise<T> {
+  let last: T | null = null;
+  for (let attempt = 1; attempt <= INVENTORY_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      last = await run();
+    } catch (error) {
+      last = { error: { message: error instanceof Error ? error.message : String(error) } } as T;
+    }
+    if (!last.error || !isTransientError(last.error) || attempt === INVENTORY_MAX_ATTEMPTS) return last;
+    await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
+  }
+  return last as T;
+}
+
+function isTransientError(error: { code?: string; message: string }) {
+  const code = error.code ?? "";
+  const msg = (error.message ?? "").toLowerCase();
+  if (["57014", "55P03", "40001", "40P01", "08006", "08003"].includes(code)) return true;
+  if (/^5\d\d$/.test(code)) return true;
+  return (
+    msg.includes("timeout") ||
+    msg.includes("timed out") ||
+    msg.includes("aborted") ||
+    msg.includes("failed to fetch") ||
+    msg.includes("network") ||
+    msg.includes("canceling statement") ||
+    msg.includes("lock")
+  );
+}
+
+function inventoryRpcMessage(message: string) {
+  const msg = message.toLowerCase();
+  if (msg.includes("could not find the function") && msg.includes("load_inventory_chunk")) {
+    return "Falta ejecutar supabase/inventario_d_comun.sql en Supabase.";
+  }
+  if (msg.includes("lock timeout") || msg.includes("lock_timeout") || msg.includes("could not obtain lock")) {
+    return "El inventario esta siendo usado por otro proceso en este momento. Intente de nuevo en unos minutos.";
+  }
+  if (msg.includes("statement timeout") || msg.includes("canceling statement") || msg.includes("timeout") || msg.includes("aborted")) {
+    return "La carga de inventario excedio el tiempo limite.";
+  }
+  return message;
 }
 
 export async function syncStoresToSupabase(
@@ -457,7 +537,7 @@ export async function syncStoresToSupabase(
   const deleted = await commonDb()!.from("stores").delete().not("id", "is", null);
   if (deleted.error) return { ok: false, message: deleted.error.message };
 
-  const uploaded = await uploadInChunks(validStores, 700, onProgress, "Cargando tiendas vigentes", async (chunk) =>
+  const uploaded = await uploadInChunks(validStores.map(toStoreRow), 700, onProgress, "Cargando tiendas vigentes", async (chunk) =>
     commonDb()!.from("stores").insert(chunk),
   );
   if (!uploaded.ok) return uploaded;
@@ -579,6 +659,26 @@ function deduplicateInventory(records: InventoryRecord[]) {
     grouped.set(key, current ? { ...record, quantity: current.quantity + record.quantity } : record);
   });
   return [...grouped.values()];
+}
+
+function mapStoreRow(store: StoreRow): StoreLocation {
+  return {
+    id: store.id,
+    name: store.name,
+    storeType: store.store_type ?? undefined,
+    storeFormat: store.store_format ?? undefined,
+    location: store.location ?? undefined,
+  };
+}
+
+function toStoreRow(store: StoreLocation): StoreRow {
+  return {
+    id: store.id,
+    name: store.name,
+    store_type: store.storeType || null,
+    store_format: store.storeFormat || null,
+    location: store.location || null,
+  };
 }
 
 function deduplicateStores(stores: StoreLocation[]) {

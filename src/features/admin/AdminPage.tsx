@@ -2,7 +2,7 @@ import { Boxes, Landmark, PackageSearch, ShieldCheck, SlidersHorizontal, Tags, U
 import { useEffect, useMemo, useState } from "react";
 import { AppFeedback } from "../../components/AppFeedback";
 import { Card, CardContent, Header, Metric } from "../../components/ui";
-import { inventoryFeatureEnabled, inventoryStoreId } from "../../config/features";
+import { inventoryFeatureEnabled } from "../../config/features";
 import { customerImportMessage } from "../../services/customerSegments.mjs";
 import { updateStoredDataStatus } from "../../services/dataStatus";
 import {
@@ -302,11 +302,13 @@ export function AdminPage({ role }: { role?: AppRole }) {
     setProgress({ title: "Leyendo inventario", detail: file.name, current: 0, total: 1 });
     try {
       const parsedRows = await parseInventoryFile(file);
-      const storeInventoryRows = parsedRows.filter((row) => row.storeId === inventoryStoreId);
+      // Se cargan TODAS las tiendas: d_comun.inventory es compartido con otras aplicaciones.
+      const storeInventoryRows = parsedRows.filter((row) => row.storeId && row.sku);
+      const storeCount = new Set(storeInventoryRows.map((row) => row.storeId)).size;
       setInventoryRows(storeInventoryRows);
       updateStoredDataStatus("inventory", storeInventoryRows.length ? "ok" : "error", `${storeInventoryRows.length} registros`);
       setMessage(
-        `Inventario cargado: ${storeInventoryRows.length} registros de tienda ${inventoryStoreId} detectados.`,
+        `Inventario cargado: ${storeInventoryRows.length} registros de ${storeCount} tiendas detectados.`,
       );
     } catch (error) {
       updateStoredDataStatus("inventory", "error", "No cargado");

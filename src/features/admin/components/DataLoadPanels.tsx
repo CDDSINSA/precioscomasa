@@ -205,7 +205,7 @@ export function InventoryLoadPanel({
   return (
     <LoadPanel
       title="Inventario"
-      subtitle="Existencias de tienda 1041 por SKU. Cada carga reemplaza la base completa."
+      subtitle="Existencias de todas las tiendas por SKU (d_comun.inventory, compartido). Cada carga reemplaza la base completa."
       actions={<><UploadButton label="Cargar inventario" onFile={onFile} /><Button disabled={!rows.length} onClick={onSync}><Boxes size={16} />Actualizar inventario</Button></>}
       summary={[
         ["SKU", uniqueSkus],
@@ -246,24 +246,27 @@ export function StoresLoadPanel({
   return (
     <LoadPanel
       title="Tiendas"
-      subtitle="Catalogo de tiendas usado como soporte interno del inventario."
+      subtitle="Catalogo maestro de tiendas (ID, nombre, tipo, formato y ubicacion). Cada carga reemplaza la base completa."
       actions={<><UploadButton label="Cargar tiendas" onFile={onFile} /><Button disabled={!rows.length} onClick={onSync}><Landmark size={16} />Actualizar tiendas</Button></>}
       summary={[
         ["Tiendas", rows.length],
-        ["Con nombre", rows.filter((row) => row.name).length],
-        ["Fuente", rows.length ? "Lista" : "Pendiente"],
+        ["Locales", rows.filter((row) => row.storeType?.toLowerCase() === "local").length],
+        ["Foraneas", rows.filter((row) => row.storeType?.toLowerCase().startsWith("for")).length],
+        ["Formatos", new Set(rows.map((row) => row.storeFormat).filter(Boolean)).size],
       ]}
     >
       <PreviewFrame title="Tiendas detectadas">
         <table>
           <thead>
-            <tr><th>ID</th><th>Nombre tienda</th></tr>
+            <tr><th>ID</th><th>Nombre tienda</th><th>Tipo</th><th>Formato</th><th>Ubicacion</th></tr>
           </thead>
           <tbody>
             {preview.map((store) => (
-              <tr key={store.id}><td>{store.id}</td><td>{store.name}</td></tr>
+              <tr key={store.id}>
+                <td>{store.id}</td><td>{store.name}</td><td>{store.storeType || "-"}</td><td>{store.storeFormat || "-"}</td><td>{store.location || "-"}</td>
+              </tr>
             ))}
-            {!preview.length ? <EmptyRow colSpan={2} label="No hay tiendas cargadas." /> : null}
+            {!preview.length ? <EmptyRow colSpan={5} label="No hay tiendas cargadas." /> : null}
           </tbody>
         </table>
       </PreviewFrame>
