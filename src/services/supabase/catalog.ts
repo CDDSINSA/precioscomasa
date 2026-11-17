@@ -163,6 +163,9 @@ export async function loadProductsFromSupabase(role?: AppRole): Promise<Product[
   return restrictProductsForRole(data as ProductRow[], role).map(mapProduct);
 }
 
+/** Caracteres mínimos para buscar productos en Supabase (igual que search_products_with_inventory). */
+export const MIN_PRODUCT_SEARCH_LENGTH = 3;
+
 export async function searchProductsFromSupabase(term: string, limit = 60, role?: AppRole): Promise<Product[] | null> {
   const page = await searchProductPageFromSupabase(term, { limit, role });
   return page?.products ?? null;
@@ -177,6 +180,9 @@ export async function searchProductPageFromSupabase(
   const query = term.trim();
   const limit = Math.max(1, Math.min(options.limit ?? 30, 100));
   const offset = Math.max(0, options.offset ?? 0);
+
+  // La búsqueda empieza en 3 caracteres (vacío = listado general).
+  if (query.length > 0 && query.length < MIN_PRODUCT_SEARCH_LENGTH) return { products: [], hasMore: false };
 
   if (inventoryFeatureEnabled && options.prioritizeInventory) {
     const inventoryPage = await searchProductPageWithInventory(query, {
@@ -259,7 +265,15 @@ async function searchProductPageWithInventory(
   if (options.signal) request = request.abortSignal(options.signal);
   const { data, error } = await request;
 
-  if (error || !data) return null;
+  if (options.signal?.aborted) return null;
+  if (error) {
+    // Solo si la función no existe se usa la búsqueda directa (sin orden por inventario).
+    // Antes cualquier error (p. ej. tiempo agotado) caía ahí en silencio y los productos
+    // con inventario dejaban de salir primero.
+    if (isMissingRpcFunctionError(error)) return null;
+    throw new ProductSearchError(productSearchErrorMessage(error));
+  }
+  if (!data) return null;
 
   const rows = data as ProductSearchInventoryRow[];
   const validRows = restrictProductsForRole(rows, options.role);
@@ -273,6 +287,45 @@ async function searchProductPageWithInventory(
     inventory: mapProductSearchInventory(pageRows, options.storeId),
   };
 }
+
+export class ProductSearchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProductSearchError";
+  }
+}
+
+function productSearchErrorMessage(error: { code?: string; message: string }) {
+  const msg = (error.message ?? "").toLowerCase();
+  if (error.code === "57014" || msg.includes("statement timeout") || msg.includes("canceling statement")) {
+    return "La búsqueda tardó demasiado. Intente con un término más específico.";
+  }
+  return "No se pudo completar la búsqueda de productos. Intente de nuevo.";
+}
+
+/**
+ * Recalcula d_comun.products.has_stock_1041 (1 = hay inventario en la tienda 1041).
+ * El buscador del cotizador ordena por esa bandera; se llama al terminar las cargas
+ * de inventario y de catálogo. Devuelve un texto para agregar al mensaje de la carga.
+ */
+async function refreshProductStockFlag(): Promise<string> {
+  if (!supabase) return "";
+  const client = supabase;
+  const response = await withRetries(() =>
+    client.rpc("refresh_products_stock_flag").abortSignal(AbortSignal.timeout(STOCK_FLAG_TIMEOUT_MS)),
+  );
+  if (!response.error) {
+    const result = (response.data ?? {}) as { total_with_stock?: number };
+    return ` ${Number(result.total_with_stock ?? 0)} productos con inventario en ${STOCK_FLAG_STORE_ID} quedan primero en el buscador.`;
+  }
+  if (isMissingRpcFunctionError(response.error)) {
+    return " Atención: falta ejecutar supabase/busqueda_sku_inventario.sql; el buscador no ordenará por inventario.";
+  }
+  return ` Atención: no se pudo actualizar el orden por inventario del buscador (${response.error.message}). Vuelva a cargar el inventario.`;
+}
+
+const STOCK_FLAG_STORE_ID = "1041";
+const STOCK_FLAG_TIMEOUT_MS = 150_000; // la función tiene statement_timeout de 120 s
 
 export async function loadProductsBySkus(skus: string[], role?: AppRole): Promise<Product[]> {
   if (!supabase) return [];
@@ -371,12 +424,15 @@ export async function syncProductsToSupabase(
   });
   if (!uploaded.ok) return uploaded;
 
+  onProgress?.(validProducts.length, validProducts.length, "Actualizando orden por inventario");
+  const stockNote = inventoryFeatureEnabled ? await refreshProductStockFlag() : "";
+
   const supplierNote = !withSupplier
     ? " Atención: el archivo no trae columna SUPPLIER; el rol asesor-peinsa no verá productos."
     : ` ${peinsaCount} productos del proveedor PEINSA (${PEINSA_SUPPLIER_ID}).`;
   return {
     ok: true,
-    message: `Sincronización de catálogo completada: ${validProducts.length} productos publicados.${supplierNote}`,
+    message: `Sincronización de catálogo completada: ${validProducts.length} productos publicados.${supplierNote}${stockNote}`,
   };
 }
 
@@ -443,9 +499,12 @@ export async function syncInventoryToSupabase(
     };
   }
 
+  onProgress?.(validRecords.length, validRecords.length, "Actualizando orden por inventario");
+  const stockNote = await refreshProductStockFlag();
+
   return {
     ok: true,
-    message: `Sincronizacion de inventario completada: ${validRecords.length} registros de ${storeCount} tiendas publicados.`,
+    message: `Sincronizacion de inventario completada: ${validRecords.length} registros de ${storeCount} tiendas publicados.${stockNote}`,
   };
 }
 

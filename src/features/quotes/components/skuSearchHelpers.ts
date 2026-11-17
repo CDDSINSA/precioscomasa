@@ -73,7 +73,8 @@ export function stockLabel(inventory?: ProductInventory) {
 }
 
 export function skuEmptyMessage(term: string) {
-  if (term.trim().length === 1) return "Escribe al menos 2 caracteres para buscar en todo el catálogo.";
+  const length = term.trim().length;
+  if (length > 0 && length < 3) return "Escribe al menos 3 caracteres para buscar en todo el catálogo.";
   return "No hay productos con esa búsqueda.";
 }
 

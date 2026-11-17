@@ -16,6 +16,8 @@ function functions(path, names, context) {
   return exports;
 }
 
+class ProductSearchError extends Error {}
+
 function searchHarness({ rpc = { data: [], error: null }, direct = { data: [], error: null }, onRpc } = {}) {
   const calls = [];
   const builder = (kind, response) => {
@@ -37,6 +39,9 @@ function searchHarness({ rpc = { data: [], error: null }, direct = { data: [], e
     productSelectColumns: '*', unique: items => [...new Set(items)], escapePostgrestPattern: x => x,
     isMissingColumnError: () => false, sortProductsByRelevance: rows => rows,
     mapProduct: row => row, mapProductSearchInventory: () => new Map(),
+    MIN_PRODUCT_SEARCH_LENGTH: 3, ProductSearchError,
+    isMissingRpcFunctionError: error => error.code === 'PGRST202',
+    productSearchErrorMessage: error => (error.code === '57014' ? 'timeout' : 'error'),
   });
   return { ...fns, calls };
 }
@@ -78,4 +83,25 @@ test('stock on later pages cannot move earlier products or duplicate their SKU',
   assert.deepEqual(after.slice(0, 36), before);
   assert.equal(after[36].sku, '40');
   assert.equal(new Set(after.map(row => row.sku)).size, 72);
+});
+
+test('search needs at least 3 characters and does not query Supabase before that', async () => {
+  const h = searchHarness();
+  const page = await h.searchProductPageFromSupabase('tu', { prioritizeInventory: true });
+  assert.equal(page.products.length, 0);
+  assert.equal(page.hasMore, false);
+  assert.equal(h.calls.length, 0);
+});
+
+test('RPC timeout is reported instead of silently falling back to a search without inventory order', async () => {
+  const h = searchHarness({ rpc: { data: null, error: { code: '57014', message: 'canceling statement due to statement timeout' } } });
+  await assert.rejects(h.searchProductPageFromSupabase('tubo', { prioritizeInventory: true }), ProductSearchError);
+  assert.equal(h.calls.length, 1);
+});
+
+test('missing RPC function still falls back to the direct search', async () => {
+  const h = searchHarness({ rpc: { data: null, error: { code: 'PGRST202', message: 'Could not find the function' } } });
+  const page = await h.searchProductPageFromSupabase('tubo', { prioritizeInventory: true });
+  assert.equal(page.products.length, 0);
+  assert.deepEqual(h.calls.map(call => call.kind), ['rpc', 'direct']);
 });

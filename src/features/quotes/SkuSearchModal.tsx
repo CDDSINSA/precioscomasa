@@ -13,6 +13,7 @@ import {
 } from "../../services/promotions";
 import { buildQuote, formatCurrency } from "../../services/quote";
 import { loadInventoryForSkus, loadOfferRulesForSkus, loadProductDepartments, loadProductsBySkus, searchProductPageFromSupabase } from "../../services/supabase";
+import { MIN_PRODUCT_SEARCH_LENGTH, ProductSearchError } from "../../services/supabase/catalog";
 import type { AppRole, Customer, OfferRule, Product, ProductDepartment, ProductInventory, QuoteItem } from "../../types/domain";
 import { ProductImage } from "./ProductImage";
 import { SkuOfferPreviewPanel } from "./components/SkuOfferPreviewPanel";
@@ -27,7 +28,6 @@ import {
   productsKey,
   skuEmptyMessage,
   sortProductsByInventory,
-  sortProductPagesByInventory,
   stockLabel,
 } from "./components/skuSearchHelpers";
 
@@ -46,6 +46,10 @@ type Props = {
   onRequestSelectCustomer?: () => void;
   onAddItems: (items: QuoteItem[]) => void;
 };
+
+function searchErrorMessage(error: unknown) {
+  return error instanceof ProductSearchError ? error.message : "No se pudo completar la búsqueda de productos. Intente de nuevo.";
+}
 
 export function SkuSearchModal({
   catalog,
@@ -89,7 +93,8 @@ export function SkuSearchModal({
     () => filterProductsByDivision(searchProducts(catalog, term), selectedDepartmentIds, selectedDivisionId).slice(0, 60),
     [catalog, selectedDepartmentIds, selectedDivisionId, term],
   );
-  const rawCandidateResults = remoteResults ?? localResults;
+  const termTooShort = term.trim().length > 0 && term.trim().length < MIN_PRODUCT_SEARCH_LENGTH;
+  const rawCandidateResults = termTooShort ? [] : remoteResults ?? localResults;
   const candidateResults = useMemo(
     () => restrictProductsForRole(rawCandidateResults, role),
     [role, rawCandidateResults],
@@ -97,10 +102,10 @@ export function SkuSearchModal({
   const candidateResultsKey = useMemo(() => candidateResults.map((product) => product.sku).join("|"), [candidateResults]);
   const inventoryReady = !inventoryEnabled || !candidateResults.length || inventoryLoadedKey === candidateResultsKey;
   const results = useMemo(
-    // Reordenar todo al agregar una página
-    // mueve los SKU anteriores; ocultarlos mientras llega inventario pierde el scroll.
+    // Los resultados remotos ya vienen ordenados por el servidor (inventario 1041 primero,
+    // luego relevancia), así que se respetan tal cual y "Ver más" solo agrega al final.
     () => remoteResults !== null
-      ? sortProductPagesByInventory(candidateResults, inventoryEnabled ? inventory : new Map(), productSearchPageSize)
+      ? candidateResults
       : sortProductsByInventory(candidateResults, inventoryEnabled ? inventory : new Map()),
     [candidateResults, inventory, inventoryEnabled, remoteResults],
   );
@@ -172,7 +177,7 @@ export function SkuSearchModal({
     setRemoteHasMore(false);
     setRemoteOffset(0);
 
-    if (query.length === 1) {
+    if (query.length > 0 && query.length < MIN_PRODUCT_SEARCH_LENGTH) {
       setRemoteResults(null);
       setRemoteLoading(false);
       return () => {
@@ -202,10 +207,12 @@ export function SkuSearchModal({
           }
           onCatalogProductsFound(page.products);
         }
-      }).catch(() => {
+      }).catch((error: unknown) => {
         if (active) {
-          setRemoteResults(null);
+          // No mostrar una lista sin orden por inventario: avisar del error.
+          setRemoteResults([]);
           setRemoteHasMore(false);
+          setSearchError(searchErrorMessage(error));
         }
       }).finally(() => {
         if (active) setRemoteLoading(false);
@@ -261,9 +268,9 @@ export function SkuSearchModal({
         setInventoryLoadedKey(productsKey(mergedProducts));
       }
       onCatalogProductsFound(page.products);
-    }).catch(() => {
+    }).catch((error: unknown) => {
       if (!controller.signal.aborted && searchController.current === controller) {
-        setSearchError("No se pudieron cargar más resultados. Intente de nuevo.");
+        setSearchError(error instanceof ProductSearchError ? error.message : "No se pudieron cargar más resultados. Intente de nuevo.");
       }
     }).finally(() => {
       if (!controller.signal.aborted && searchController.current === controller) {
@@ -504,7 +511,7 @@ export function SkuSearchModal({
                   {remoteLoading ? "Buscando..." : "Ver más resultados"}
                 </button>
               ) : null}
-              {!remoteLoading && inventoryReady && !results.length ? (
+              {!remoteLoading && inventoryReady && !results.length && !searchError ? (
                 <p className="empty-copy">{skuEmptyMessage(term)}</p>
               ) : null}
             </div>
