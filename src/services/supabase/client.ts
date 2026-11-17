@@ -97,10 +97,53 @@ export async function refreshRemoteDataStatuses(metrics?: RemoteDataMetrics) {
   }
 }
 
-export async function loadRemoteDataMetrics(): Promise<RemoteDataMetrics> {
+// La barra de estado y Administración piden los totales al mismo tiempo:
+// se comparte la misma consulta para no contar las tablas dos veces.
+let metricsInFlight: { promise: Promise<RemoteDataMetrics>; startedAt: number } | null = null;
+const METRICS_SHARE_MS = 5000;
+
+export function loadRemoteDataMetrics(): Promise<RemoteDataMetrics> {
+  if (metricsInFlight && Date.now() - metricsInFlight.startedAt < METRICS_SHARE_MS) {
+    return metricsInFlight.promise;
+  }
+  const promise = loadRemoteDataMetricsUncached();
+  metricsInFlight = { promise, startedAt: Date.now() };
+  return promise;
+}
+
+/**
+ * Totales exactos con una sola llamada (g_comasa.get_data_metrics, ver supabase/conteo_metricas.sql).
+ * La función cuenta sin evaluar las políticas RLS fila por fila, por eso no agota el tiempo.
+ * Si no existe o el usuario no es admin/oper, se usa el conteo por tabla.
+ */
+async function loadMetricsFromRpc(): Promise<RemoteDataMetrics | null> {
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase.rpc("get_data_metrics").abortSignal(AbortSignal.timeout(40000));
+    if (error || !data) return null;
+    const row = data as Partial<Record<"promotions" | "customers" | "catalog" | "inventory" | "stores", number | null>>;
+    const read = (value: unknown) => (typeof value === "number" ? value : value == null ? null : Number(value));
+    return {
+      promotions: read(row.promotions),
+      customers: read(row.customers),
+      catalog: read(row.catalog),
+      inventory: inventoryFeatureEnabled ? read(row.inventory) : null,
+      stores: inventoryFeatureEnabled ? read(row.stores) : null,
+      errors: {},
+      estimated: {},
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function loadRemoteDataMetricsUncached(): Promise<RemoteDataMetrics> {
   if (!supabase) {
     return { promotions: null, customers: null, catalog: null, inventory: null, stores: null };
   }
+
+  const fromRpc = await loadMetricsFromRpc();
+  if (fromRpc) return fromRpc;
 
   const [promotions, customers, catalog, inventory, stores] = await Promise.all([
     countRows("promotions"),
