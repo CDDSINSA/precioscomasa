@@ -11,6 +11,7 @@ import type {
   Product,
   ProductDepartment,
   ProductInventory,
+  ProductPriceCostRecord,
   StoreLocation,
 } from "../../types/domain";
 import { updateStoredDataStatus } from "../dataStatus";
@@ -41,6 +42,7 @@ export type ProductSearchPage = {
 };
 
 type ProductSearchOptions = {
+  signal?: AbortSignal;
   limit?: number;
   offset?: number;
   prioritizeInventory?: boolean;
@@ -170,7 +172,7 @@ export async function searchProductPageFromSupabase(
   term: string,
   options: ProductSearchOptions = {},
 ): Promise<ProductSearchPage | null> {
-  if (!supabase) return null;
+  if (!supabase || options.signal?.aborted) return null;
 
   const query = term.trim();
   const limit = Math.max(1, Math.min(options.limit ?? 30, 100));
@@ -183,12 +185,15 @@ export async function searchProductPageFromSupabase(
       offset,
       storeId: options.storeId ?? inventoryStoreId,
       role: options.role,
+      signal: options.signal,
     });
     if (inventoryPage) return inventoryPage;
+    if (options.signal?.aborted) return null;
   }
 
   const restricted = isSupplierRestrictedRole(options.role);
-  const departmentIds = options.divisionId ? await loadDepartmentIdsForDivision(options.divisionId) : [];
+  const departmentIds = options.divisionId ? await loadDepartmentIdsForDivision(options.divisionId, options.signal) : [];
+  if (options.signal?.aborted) return null;
   if (options.divisionId && !departmentIds.length) return { products: [], hasMore: false };
 
   let request = commonDb()!
@@ -213,17 +218,21 @@ export async function searchProductPageFromSupabase(
 
   if (departmentIds.length) request = request.in("department_id", departmentIds);
 
-  const response = await request
+  request = request
     .order("description", { ascending: true })
+    .order("sku", { ascending: true })
     .range(offset, offset + limit);
+  if (options.signal) request = request.abortSignal(options.signal);
+  const response = await request;
+  if (options.signal?.aborted) return null;
 
   if (response.error && isMissingColumnError(response.error) && restricted) return null;
 
   const { data, error } = response.error && isMissingColumnError(response.error)
-    ? await buildLegacyProductSearchRequest(query, offset, limit)
+    ? await buildLegacyProductSearchRequest(query, offset, limit, options.signal)
     : response;
 
-  if (error || !data?.length) return null;
+  if (error || !data) return null;
 
   const products = restrictProductsForRole(data as ProductRow[], options.role).map(mapProduct);
   return {
@@ -234,7 +243,7 @@ export async function searchProductPageFromSupabase(
 
 async function searchProductPageWithInventory(
   query: string,
-  options: { divisionId?: string; limit: number; offset: number; storeId: string; role?: AppRole },
+  options: { divisionId?: string; limit: number; offset: number; storeId: string; role?: AppRole; signal?: AbortSignal },
 ): Promise<ProductSearchPage | null> {
   if (!supabase) return null;
 
@@ -246,9 +255,11 @@ async function searchProductPageWithInventory(
   };
   if (options.divisionId) args.search_division_id = options.divisionId;
 
-  const { data, error } = await supabase.rpc("search_products_with_inventory", args);
+  let request = supabase.rpc("search_products_with_inventory", args);
+  if (options.signal) request = request.abortSignal(options.signal);
+  const { data, error } = await request;
 
-  if (error || !data?.length) return null;
+  if (error || !data) return null;
 
   const rows = data as ProductSearchInventoryRow[];
   const validRows = restrictProductsForRole(rows, options.role);
@@ -518,6 +529,85 @@ function inventoryRpcMessage(message: string) {
   return message;
 }
 
+/**
+ * Segunda carga del maestro: actualiza SOLO los precios y costos por tienda
+ * (unit_retail_* / av_cost_*) de los SKU que ya existen en d_comun.products.
+ * No borra ni inserta productos. Los SKU que no están en el maestro se informan.
+ */
+export async function syncProductPricesCostsToSupabase(
+  records: ProductPriceCostRecord[],
+  onProgress?: SyncProgressCallback,
+) {
+  if (!supabase) {
+    return { ok: false, message: "Supabase no esta configurado en este entorno." };
+  }
+
+  const client = supabase;
+  const validRecords = records.filter((record) => record.sku);
+  if (!validRecords.length) return { ok: false, message: "No hay precios/costos validos para actualizar." };
+
+  let updated = 0;
+  let missing = 0;
+  const missingSample: string[] = [];
+
+  const uploaded = await uploadInChunks(
+    validRecords,
+    PRICE_COST_CHUNK_SIZE,
+    onProgress,
+    "Actualizando precios y costos",
+    async (chunk) => {
+      const response = await withRetries(() =>
+        client
+          .rpc("update_product_prices_costs", { rows: chunk.map(priceCostPayload) })
+          .abortSignal(AbortSignal.timeout(INVENTORY_CHUNK_TIMEOUT_MS)),
+      );
+      if (!response.error) {
+        const result = (response.data ?? {}) as { updated?: number; missing?: number; missing_skus?: string[] };
+        updated += Number(result.updated ?? 0);
+        missing += Number(result.missing ?? 0);
+        for (const sku of result.missing_skus ?? []) {
+          if (missingSample.length < 10) missingSample.push(sku);
+        }
+      }
+      return response;
+    },
+  );
+
+  if (!uploaded.ok) {
+    const message = uploaded.message.toLowerCase().includes("update_product_prices_costs")
+      ? "Falta ejecutar supabase/precios_costos_maestro.sql en Supabase."
+      : inventoryRpcMessage(uploaded.message);
+    return {
+      ok: false,
+      message: `${message} Se actualizaron ${updated} SKU antes del error; puede volver a ejecutar la carga sin riesgo.`,
+    };
+  }
+
+  const missingText = missing
+    ? ` ${missing} SKU del archivo no existen en el maestro y se omitieron (ej.: ${missingSample.join(", ")}).`
+    : "";
+  return {
+    ok: true,
+    message: `Precios y costos actualizados: ${updated} SKU.${missingText}`,
+  };
+}
+
+const PRICE_COST_CHUNK_SIZE = 2000;
+
+function priceCostPayload(record: ProductPriceCostRecord) {
+  return {
+    sku: record.sku,
+    unit_retail_foraneo: record.unitRetailForaneo ?? null,
+    unit_retail_retail: record.unitRetailRetail ?? null,
+    unit_retail_cedi: record.unitRetailCedi ?? null,
+    unit_retail_ferex: record.unitRetailFerex ?? null,
+    av_cost_foraneo: record.avCostForaneo ?? null,
+    av_cost_retail: record.avCostRetail ?? null,
+    av_cost_cedi: record.avCostCedi ?? null,
+    av_cost_ferex: record.avCostFerex ?? null,
+  };
+}
+
 export async function syncStoresToSupabase(
   stores: StoreLocation[],
   onProgress?: SyncProgressCallback,
@@ -687,19 +777,21 @@ function deduplicateStores(stores: StoreLocation[]) {
   return [...grouped.values()];
 }
 
-async function loadDepartmentIdsForDivision(divisionId: string) {
+async function loadDepartmentIdsForDivision(divisionId: string, signal?: AbortSignal) {
   if (!supabase) return [];
 
-  const { data, error } = await commonDb()!
+  let request = commonDb()!
     .from("product_departments")
     .select("department_id")
     .eq("division_id", divisionId);
+  if (signal) request = request.abortSignal(signal);
+  const { data, error } = await request;
 
   if (error || !data) return [];
   return (data as Pick<ProductDepartmentRow, "department_id">[]).map((row) => row.department_id);
 }
 
-async function buildLegacyProductSearchRequest(query: string, offset: number, limit: number) {
+async function buildLegacyProductSearchRequest(query: string, offset: number, limit: number, signal?: AbortSignal) {
   if (!supabase) return { data: null, error: { message: "Supabase no esta configurado." } };
 
   let request = commonDb()!
@@ -719,9 +811,12 @@ async function buildLegacyProductSearchRequest(query: string, offset: number, li
     );
   }
 
-  return request
+  request = request
     .order("description", { ascending: true })
+    .order("sku", { ascending: true })
     .range(offset, offset + limit);
+  if (signal) request = request.abortSignal(signal);
+  return request;
 }
 
 function sortProductsByRelevance(products: Product[], query: string) {

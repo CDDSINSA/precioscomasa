@@ -91,6 +91,23 @@ export type StoreLocation = {
   location?: string;
 };
 
+/**
+ * Precios y costos por tienda del maestro (d_comun.products).
+ * Archivo: *_21 = foráneo, *_24 = retail, *_1041 = CEDI, *_69 = Ferex.
+ * undefined = sin dato (se guarda vacío).
+ */
+export type ProductPriceCostRecord = {
+  sku: string;
+  unitRetailForaneo?: number;
+  unitRetailRetail?: number;
+  unitRetailCedi?: number;
+  unitRetailFerex?: number;
+  avCostForaneo?: number;
+  avCostRetail?: number;
+  avCostCedi?: number;
+  avCostFerex?: number;
+};
+
 export type InventoryRecord = {
   storeId: string;
   sku: string;

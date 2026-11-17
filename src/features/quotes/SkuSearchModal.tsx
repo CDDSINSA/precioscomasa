@@ -27,6 +27,7 @@ import {
   productsKey,
   skuEmptyMessage,
   sortProductsByInventory,
+  sortProductPagesByInventory,
   stockLabel,
 } from "./components/skuSearchHelpers";
 
@@ -76,6 +77,9 @@ export function SkuSearchModal({
   const [departments, setDepartments] = useState<ProductDepartment[]>([]);
   const [departmentsLoading, setDepartmentsLoading] = useState(false);
   const [selectedDivisionId, setSelectedDivisionId] = useState("");
+  const searchController = useRef<AbortController | null>(null);
+  const loadingMore = useRef(false);
+  const [searchError, setSearchError] = useState("");
   const divisionOptions = useMemo(() => buildDivisionOptions(departments), [departments]);
   const selectedDepartmentIds = useMemo(
     () => new Set(departments.filter((department) => department.divisionId === selectedDivisionId).map((department) => department.departmentId)),
@@ -93,8 +97,12 @@ export function SkuSearchModal({
   const candidateResultsKey = useMemo(() => candidateResults.map((product) => product.sku).join("|"), [candidateResults]);
   const inventoryReady = !inventoryEnabled || !candidateResults.length || inventoryLoadedKey === candidateResultsKey;
   const results = useMemo(
-    () => (inventoryReady ? sortProductsByInventory(candidateResults, inventoryEnabled ? inventory : new Map()) : []),
-    [candidateResults, inventory, inventoryEnabled, inventoryReady],
+    // Reordenar todo al agregar una página
+    // mueve los SKU anteriores; ocultarlos mientras llega inventario pierde el scroll.
+    () => remoteResults !== null
+      ? sortProductPagesByInventory(candidateResults, inventoryEnabled ? inventory : new Map(), productSearchPageSize)
+      : sortProductsByInventory(candidateResults, inventoryEnabled ? inventory : new Map()),
+    [candidateResults, inventory, inventoryEnabled, remoteResults],
   );
   const visibleResults = results.slice(0, visibleCount);
   const hasLoadedHiddenResults = visibleCount < results.length;
@@ -154,7 +162,12 @@ export function SkuSearchModal({
 
   useEffect(() => {
     let active = true;
+    const controller = new AbortController();
+    searchController.current = controller;
+    loadingMore.current = false;
     const query = term.trim();
+    setSearchError("");
+    setRemoteResults(null);
     setVisibleCount(visibleResultStep);
     setRemoteHasMore(false);
     setRemoteOffset(0);
@@ -164,6 +177,7 @@ export function SkuSearchModal({
       setRemoteLoading(false);
       return () => {
         active = false;
+        controller.abort();
       };
     }
 
@@ -175,9 +189,10 @@ export function SkuSearchModal({
         prioritizeInventory: inventoryEnabled,
         storeId: inventoryStoreId,
         role,
+        signal: controller.signal,
       }).then((page) => {
         if (!active) return;
-        setRemoteResults(page?.products.length ? page.products : null);
+        setRemoteResults(page ? page.products : null);
         setRemoteHasMore(Boolean(page?.hasMore));
         setRemoteOffset(productSearchPageSize);
         if (page?.products.length) {
@@ -199,6 +214,7 @@ export function SkuSearchModal({
 
     return () => {
       active = false;
+      controller.abort();
       window.clearTimeout(timer);
     };
   }, [inventoryEnabled, onCatalogProductsFound, role, selectedDivisionId, term]);
@@ -209,8 +225,12 @@ export function SkuSearchModal({
       return;
     }
 
-    if (!remoteResults || !remoteHasMore || remoteLoading) return;
+    if (!remoteResults || !remoteHasMore || remoteLoading || loadingMore.current) return;
 
+    const controller = searchController.current;
+    if (!controller || controller.signal.aborted) return;
+    loadingMore.current = true;
+    setSearchError("");
     setRemoteLoading(true);
     searchProductPageFromSupabase(term, {
       divisionId: selectedDivisionId || undefined,
@@ -219,8 +239,14 @@ export function SkuSearchModal({
       prioritizeInventory: inventoryEnabled,
       storeId: inventoryStoreId,
       role,
+      signal: controller.signal,
     }).then((page) => {
-      if (!page?.products.length) {
+      if (controller.signal.aborted || searchController.current !== controller) return;
+      if (!page) {
+        setSearchError("No se pudieron cargar más resultados. Intente de nuevo.");
+        return;
+      }
+      if (!page.products.length) {
         setRemoteHasMore(false);
         return;
       }
@@ -236,9 +262,14 @@ export function SkuSearchModal({
       }
       onCatalogProductsFound(page.products);
     }).catch(() => {
-      setRemoteHasMore(false);
+      if (!controller.signal.aborted && searchController.current === controller) {
+        setSearchError("No se pudieron cargar más resultados. Intente de nuevo.");
+      }
     }).finally(() => {
-      setRemoteLoading(false);
+      if (!controller.signal.aborted && searchController.current === controller) {
+        loadingMore.current = false;
+        setRemoteLoading(false);
+      }
     });
   }
 
@@ -261,16 +292,24 @@ export function SkuSearchModal({
     }
 
     let active = true;
+    const missingSkus = candidateResults.filter(product => !inventory.has(product.sku)).map(product => product.sku);
+    if (!missingSkus.length) {
+      setInventoryLoadedKey(candidateResultsKey);
+      setInventoryLoading(false);
+      return;
+    }
     setInventoryLoading(true);
-    setInventoryLoadedKey("");
-    loadInventoryForSkus(candidateResults.map((product) => product.sku), [inventoryStoreId]).then((loadedInventory) => {
+    loadInventoryForSkus(missingSkus, [inventoryStoreId]).then((loadedInventory) => {
       if (active) {
-        setInventory(loadedInventory);
+        // También recordar los SKU sin stock para no repetir su consulta en cada página.
+        missingSkus.forEach(sku => {
+          if (!loadedInventory.has(sku)) loadedInventory.set(sku, { totalQuantity: 0, stores: [] });
+        });
+        setInventory(current => mergeInventoryBySku(current, loadedInventory));
         setInventoryLoadedKey(candidateResultsKey);
       }
     }).catch(() => {
       if (active) {
-        setInventory(new Map());
         setInventoryLoadedKey(candidateResultsKey);
       }
     }).finally(() => {
@@ -439,8 +478,7 @@ export function SkuSearchModal({
             </div>
 
             <div className="sku-results">
-              {remoteLoading ? <p className="empty-copy">Buscando productos...</p> : null}
-              {!remoteLoading && (inventoryLoading || !inventoryReady) ? <p className="empty-copy">Revisando inventario disponible...</p> : null}
+              {remoteLoading && !results.length ? <p className="empty-copy">Buscando productos...</p> : null}
               {visibleResults.map((product) => (
                 <button
                   className={product.sku === selected?.sku ? "selected" : ""}
@@ -451,7 +489,7 @@ export function SkuSearchModal({
                   <span className="sku-item-info">
                     <strong>{product.sku}</strong>
                     <small>{product.description}</small>
-                    {inventoryEnabled ? <em>{stockLabel(inventory.get(product.sku))}</em> : null}
+                    {inventoryEnabled ? <em>{!inventoryReady && !inventory.has(product.sku) ? "Revisando inventario..." : stockLabel(inventory.get(product.sku))}</em> : null}
                     <em>{product.partNumber ?? "Sin número de parte"}</em>
                   </span>
                   <div className="sku-item-price">
@@ -460,6 +498,7 @@ export function SkuSearchModal({
                   </div>
                 </button>
               ))}
+              {searchError ? <p className="empty-copy" role="status">{searchError}</p> : null}
               {canShowMoreResults ? (
                 <button className="sku-load-more" type="button" onClick={loadMoreResults} disabled={remoteLoading}>
                   {remoteLoading ? "Buscando..." : "Ver más resultados"}

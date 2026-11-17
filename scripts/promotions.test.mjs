@@ -27,7 +27,7 @@ function loadModule(path, dependencies = {}, globals = {}) {
 const configModule = loadModule("../src/services/dealConfig.ts");
 
 test("offer cards load all distinct totals across capped pages taking over 30 seconds in total", async () => {
-  const source = readFileSync(new URL("../src/services/supabase.ts", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../src/services/supabase/promotions.ts", import.meta.url), "utf8");
   const ast = ts.createSourceFile("supabase.ts", source, ts.ScriptTarget.ES2022, true);
   const loader = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "loadOfferConfigurationMetrics");
   assert.ok(loader);
@@ -138,7 +138,7 @@ test("offer configuration button leaves its loading state after a search error",
 });
 
 test("offer configuration search returns all 157 rows even with a smaller server page cap", async () => {
-  const source = readFileSync(new URL("../src/services/supabase.ts", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../src/services/supabase/promotions.ts", import.meta.url), "utf8");
   const ast = ts.createSourceFile("supabase.ts", source, ts.ScriptTarget.ES2022, true);
   const search = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "searchOfferConfigurations");
   assert.ok(search);
@@ -1018,7 +1018,7 @@ test("global detail reads distinguish a missing migration from operational error
 });
 
 test("offer configuration panel exposes direct row deletion and modal confirmation with context or global scope", () => {
-  const adminSource = readFileSync(new URL("../src/features/admin/AdminPage.tsx", import.meta.url), "utf8");
+  const adminSource = readFileSync(new URL("../src/features/admin/components/OfferConfigurationPanel.tsx", import.meta.url), "utf8");
   const deleteSource = readFileSync(new URL("../src/features/admin/DeleteOfferButton.tsx", import.meta.url), "utf8");
   assert.match(adminSource, /DeleteOfferModal/);
   assert.match(adminSource, /offer-row-delete-btn/);
@@ -1100,7 +1100,7 @@ test("quote page and SKU modal forward the user role to every product query", ()
 });
 
 test("direct product search fallback applies the PEINSA supplier filter", () => {
-  const source = readFileSync(new URL("../src/services/supabase.ts", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../src/services/supabase/catalog.ts", import.meta.url), "utf8");
   const start = source.indexOf("export async function searchProductPageFromSupabase");
   const end = source.indexOf("async function searchProductPageWithInventory");
   const body = source.slice(start, end);
@@ -1206,7 +1206,7 @@ test("admin page exposes Usuarios section and SQL migration preserves auth.users
   assert.match(adminSource, /<UserManagementPanel/);
   assert.match(panelSource, /Departamento de Transformación/);
   assert.match(panelSource, /misma contraseña que utiliza en otras aplicaciones/);
-  assert.match(sqlSource, /create or replace function public\.admin_provision_user/);
+  assert.match(sqlSource, /create or replace function (?:public|g_comasa)\.admin_provision_user/);
   assert.match(sqlSource, /existing_auth_profile_created/);
   assert.match(sqlSource, /created_all/);
   assert.match(sqlSource, /drop trigger if exists on_auth_user_created on auth\.users/);

@@ -1,9 +1,9 @@
 import { readSheet } from "read-excel-file/web-worker";
 import * as XLSX from "xlsx";
 import { parseOfferDetails } from "../services/offerConfiguration";
-import type { Customer, ImportedPromotionRow, InventoryRecord, OfferType, Product, QuoteItem, StoreLocation } from "../types/domain";
+import type { Customer, ImportedPromotionRow, InventoryRecord, OfferType, Product, ProductPriceCostRecord, QuoteItem, StoreLocation } from "../types/domain";
 
-type ParseMode = "inspect" | "quote" | "promotion" | "customer" | "catalog" | "inventory" | "store" | "offer-details";
+type ParseMode = "inspect" | "quote" | "promotion" | "customer" | "catalog" | "price-cost" | "inventory" | "store" | "offer-details";
 
 function normalizeHeader(value: unknown) {
   return String(value ?? "")
@@ -334,6 +334,57 @@ function parseCatalogRows(rows: Record<string, unknown>[]): Product[] {
   );
 }
 
+// Columnas del archivo -> campo destino. 21 = foráneo, 24 = retail, 1041 = CEDI, 69 = Ferex.
+const PRICE_COST_COLUMNS = [
+  ["unit_retail_21", "unitRetailForaneo"],
+  ["unit_retail_24", "unitRetailRetail"],
+  ["unit_retail_1041", "unitRetailCedi"],
+  ["unit_retail_69", "unitRetailFerex"],
+  ["av_cost_21", "avCostForaneo"],
+  ["av_cost_24", "avCostRetail"],
+  ["av_cost_1041", "avCostCedi"],
+  ["av_cost_69", "avCostFerex"],
+] as const;
+
+/** Número opcional: vacío, "NULL" o texto no numérico = sin dato (no cero). */
+function toOptionalAmount(value: unknown) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  let text = String(value ?? "").trim();
+  if (!text || /^(null|n\/a|na|-)$/i.test(text)) return undefined;
+  text = text.replace(/[^\d.,-]/g, "");
+  if (text.includes(",") && text.includes(".")) text = text.replace(/,/g, "");
+  else text = text.replace(",", ".");
+  if (!text) return undefined;
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parsePriceCostRows(rows: Record<string, unknown>[]): ProductPriceCostRecord[] {
+  const headers = new Set(Object.keys(rows[0] ?? {}).map(normalizeHeader));
+  // Se exigen las 8 columnas: una columna ausente dejaría vacío ese dato en todo el maestro.
+  const missingColumns = PRICE_COST_COLUMNS.filter(([column]) => !headers.has(column)).map(([column]) => column);
+  if (missingColumns.length) {
+    throw new Error(`El archivo de precios y costos no trae las columnas: ${missingColumns.join(", ")}.`);
+  }
+  if (!headers.has("item") && !headers.has("sku") && !headers.has("articulo")) {
+    throw new Error("El archivo de precios y costos no trae la columna item (SKU).");
+  }
+  const presentColumns = PRICE_COST_COLUMNS;
+
+  const grouped = new Map<string, ProductPriceCostRecord>();
+  rows.forEach((row) => {
+    const data = normalizeRow(row);
+    const sku = String(pick(data, ["item", "sku", "articulo"]) ?? "").trim().replace(/\.0+$/, "");
+    if (!sku || sku.toUpperCase() === "NULL") return;
+    const record: ProductPriceCostRecord = { sku };
+    presentColumns.forEach(([column, field]) => {
+      record[field] = toOptionalAmount(data[column]);
+    });
+    grouped.set(sku, record);
+  });
+  return [...grouped.values()];
+}
+
 function parseInventoryRows(rows: Record<string, unknown>[]): InventoryRecord[] {
   return deduplicateInventory(
     rows
@@ -453,6 +504,8 @@ self.onmessage = async (event: MessageEvent<{ id: string; file: File; mode: Pars
             ? parseCustomerRows(rows)
             : mode === "catalog"
               ? parseCatalogRows(rows)
+              : mode === "price-cost"
+                ? parsePriceCostRows(rows)
               : mode === "inventory"
                 ? parseInventoryRows(rows)
                 : mode === "store"

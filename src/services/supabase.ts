@@ -19,6 +19,7 @@ export {
   searchProductPageFromSupabase,
   searchProductsFromSupabase,
   syncInventoryToSupabase,
+  syncProductPricesCostsToSupabase,
   syncProductsToSupabase,
   syncStoresToSupabase,
   type ProductSearchPage,

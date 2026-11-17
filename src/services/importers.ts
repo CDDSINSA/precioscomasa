@@ -1,7 +1,7 @@
-import type { Customer, ImportedPromotionRow, InventoryRecord, Product, QuoteItem, StoreLocation } from "../types/domain";
+import type { Customer, ImportedPromotionRow, InventoryRecord, Product, ProductPriceCostRecord, QuoteItem, StoreLocation } from "../types/domain";
 import { selectCustomerSegments } from "./customerSegments.mjs";
 
-type ParseMode = "inspect" | "quote" | "promotion" | "customer" | "catalog" | "inventory" | "store" | "offer-details";
+type ParseMode = "inspect" | "quote" | "promotion" | "customer" | "catalog" | "price-cost" | "inventory" | "store" | "offer-details";
 
 export function parseOfferConfigurationFile(file: File) {
   return parseFileInWorker<import("./offerConfiguration").DetailImport>(file, "offer-details");
@@ -99,6 +99,11 @@ export async function parseCustomerImport(file: File) {
 
 export async function parseCatalogFile(file: File): Promise<Product[]> {
   return parseFileInWorker<Product[]>(file, "catalog");
+}
+
+/** Segundo archivo del maestro: SKU + unit_retail_* / av_cost_* por tienda. */
+export async function parsePriceCostFile(file: File): Promise<ProductPriceCostRecord[]> {
+  return parseFileInWorker<ProductPriceCostRecord[]>(file, "price-cost");
 }
 
 export async function parseInventoryFile(file: File): Promise<InventoryRecord[]> {

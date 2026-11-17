@@ -51,6 +51,8 @@ export type RemoteDataMetrics = {
   catalog: number | null;
   inventory: number | null;
   stores: number | null;
+  errors?: Partial<Record<"promotions" | "customers" | "catalog" | "inventory" | "stores", string>>;
+  estimated?: Partial<Record<"promotions" | "customers" | "catalog" | "inventory" | "stores", boolean>>;
 };
 
 export async function testSupabaseConnection() {
@@ -60,10 +62,10 @@ export async function testSupabaseConnection() {
   return error ? { ok: false, label: "Sin conexión" } : { ok: true, label: "Conectado" };
 }
 
-export async function refreshRemoteDataStatuses() {
+export async function refreshRemoteDataStatuses(metrics?: RemoteDataMetrics) {
   if (!supabase) return;
 
-  const metrics = await loadRemoteDataMetrics();
+  metrics ??= await loadRemoteDataMetrics();
 
   updateStoredDataStatus(
     "promotions",
@@ -73,12 +75,12 @@ export async function refreshRemoteDataStatuses() {
   updateStoredDataStatus(
     "customers",
     statusFromCount(metrics.customers),
-    detailFromCount(metrics.customers, "clientes"),
+    metrics.errors?.customers ?? detailFromCount(metrics.customers, metrics.estimated?.customers ? "clientes (aprox.)" : "clientes"),
   );
   updateStoredDataStatus(
     "catalog",
     statusFromCount(metrics.catalog),
-    detailFromCount(metrics.catalog, "productos"),
+    metrics.errors?.catalog ?? detailFromCount(metrics.catalog, metrics.estimated?.catalog ? "productos (aprox.)" : "productos"),
   );
 
   if (inventoryFeatureEnabled) {
@@ -108,21 +110,64 @@ export async function loadRemoteDataMetrics(): Promise<RemoteDataMetrics> {
     inventoryFeatureEnabled ? countRows("stores") : Promise.resolve(null),
   ]);
 
-  return { promotions, customers, catalog, inventory, stores };
+  return {
+    promotions: promotions.count,
+    customers: customers.count,
+    catalog: catalog.count,
+    inventory: inventory?.count ?? null,
+    stores: stores?.count ?? null,
+    errors: {
+      promotions: promotions.error,
+      customers: customers.error,
+      catalog: catalog.error,
+      inventory: inventory?.error,
+      stores: stores?.error,
+    },
+    estimated: {
+      promotions: promotions.estimated,
+      customers: customers.estimated,
+      catalog: catalog.estimated,
+      inventory: inventory?.estimated,
+      stores: stores?.estimated,
+    },
+  };
 }
 
-async function countRows(table: "promotions" | "customers" | "products" | "inventory" | "stores") {
-  if (!supabase) return null;
+async function countRows(table: "promotions" | "customers" | "products" | "inventory" | "stores"): Promise<{ count: number | null; error?: string; estimated?: boolean }> {
+  if (!supabase) return { count: null, error: "Supabase no está configurado." };
 
   // products, stores e inventory viven en el esquema común (d_comun).
   const client = table === "products" || table === "stores" || table === "inventory" ? commonDb()! : supabase;
   // El inventario es enorme: se usa el conteo estimado del planificador para no agotar el tiempo límite.
-  const { count, error } = await client
-    .from(table)
-    .select("*", { count: table === "inventory" ? "estimated" : "exact", head: true })
-    .abortSignal(AbortSignal.timeout(15000));
-
-  return error ? null : count ?? 0;
+  // Usar GET con limit(0) conserva el cuerpo de error de PostgREST; HEAD lo descarta.
+  // No se descargan productos ni se convierte una respuesta fallida en un catálogo vacío.
+  try {
+    const readCount = (mode: "estimated" | "exact" | "planned") => client
+      .from(table)
+      .select("*", { count: mode })
+      .limit(0)
+      .abortSignal(AbortSignal.timeout(15000));
+    let estimated = table === "inventory";
+    let { count, error } = await readCount(estimated ? "estimated" : "exact");
+    // Un conteo completo puede agotar el tiempo aunque las búsquedas sí funcionen.
+    // Solo se usa una estimación ante timeout; los errores de permisos se conservan.
+    if (error && (error.code === "57014" || /timeout|timed out|aborted/i.test(error.message))) {
+      const fallback = await readCount("planned");
+      if (!fallback.error && fallback.count !== null) {
+        count = fallback.count;
+        error = null;
+        estimated = true;
+      }
+    }
+    if (error) {
+      return { count: null, error: `${error.code ? `[${error.code}] ` : ""}${error.message}` };
+    }
+    return count === null
+      ? { count: null, error: "La base no devolvió el total de registros." }
+      : { count, error: undefined, estimated };
+  } catch (error) {
+    return { count: null, error: error instanceof Error ? error.message : "No se pudo consultar el total de registros." };
+  }
 }
 
 function statusFromCount(count: number | null) {

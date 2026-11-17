@@ -104,10 +104,10 @@ export function uniqueRowsByPromotion(rows: ImportedPromotionRow[]) {
   return [...grouped.values()];
 }
 
-export function metricValue(value: number | null, loading: boolean) {
+export function metricValue(value: number | null, loading: boolean, estimated = false) {
   if (loading && value === null) return "...";
   if (value === null) return "N/D";
-  return value.toLocaleString("es-NI");
+  return `${estimated ? "≈ " : ""}${value.toLocaleString("es-NI")}`;
 }
 
 export function todayIso() {

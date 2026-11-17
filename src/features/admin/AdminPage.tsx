@@ -1,4 +1,4 @@
-import { Boxes, Landmark, PackageSearch, ShieldCheck, SlidersHorizontal, Tags, UsersRound } from "lucide-react";
+import { BadgeDollarSign, Boxes, Landmark, PackageSearch, ShieldCheck, SlidersHorizontal, Tags, UsersRound } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AppFeedback } from "../../components/AppFeedback";
 import { Card, CardContent, Header, Metric } from "../../components/ui";
@@ -9,6 +9,7 @@ import {
   parseCatalogFile,
   parseCustomerImport,
   parseInventoryFile,
+  parsePriceCostFile,
   parsePromotionFile,
   parseStoreFile,
 } from "../../services/importers";
@@ -19,6 +20,7 @@ import {
   searchOfferConfigurations,
   syncCustomersToSupabase,
   syncInventoryToSupabase,
+  syncProductPricesCostsToSupabase,
   syncProductsToSupabase,
   syncPromotionsToSupabase,
   syncStoresToSupabase,
@@ -31,7 +33,7 @@ import {
   type RemoteDataMetrics,
 } from "../../services/supabase";
 import { canManageCustomers, canManageUsers } from "../../constants/permissions";
-import type { AdminManagedUser, AppRole, Customer, ImportedPromotionRow, InventoryRecord, Product, StoreLocation } from "../../types/domain";
+import type { AdminManagedUser, AppRole, Customer, ImportedPromotionRow, InventoryRecord, Product, ProductPriceCostRecord, StoreLocation } from "../../types/domain";
 import { UserManagementPanel, listAdminUsers } from "./UserManagementPanel";
 import {
   ProcessButton,
@@ -44,12 +46,13 @@ import {
   CatalogLoadPanel,
   CustomerLoadPanel,
   InventoryLoadPanel,
+  PriceCostLoadPanel,
   PromotionLoadPanel,
   StoresLoadPanel,
 } from "./components/DataLoadPanels";
 import { OfferConfigurationPanel, zeroThresholdAllowed } from "./components/OfferConfigurationPanel";
 
-type ActiveLoad = "promotions" | "offer-settings" | "customers" | "catalog" | "inventory" | "stores" | "users";
+type ActiveLoad = "promotions" | "offer-settings" | "customers" | "catalog" | "price-costs" | "inventory" | "stores" | "users";
 
 export function AdminPage({ role }: { role?: AppRole }) {
   // El rol "oper" carga y actualiza datos, pero no ve clientes ni usuarios.
@@ -63,6 +66,7 @@ export function AdminPage({ role }: { role?: AppRole }) {
   const [promotionRows, setPromotionRows] = useState<ImportedPromotionRow[]>([]);
   const [customerRows, setCustomerRows] = useState<Customer[]>([]);
   const [catalogRows, setCatalogRows] = useState<Product[]>([]);
+  const [priceCostRows, setPriceCostRows] = useState<ProductPriceCostRecord[]>([]);
   const [inventoryRows, setInventoryRows] = useState<InventoryRecord[]>([]);
   const [storeRows, setStoreRows] = useState<StoreLocation[]>([]);
   const [adminUsers, setAdminUsers] = useState<AdminManagedUser[]>([]);
@@ -108,7 +112,7 @@ export function AdminPage({ role }: { role?: AppRole }) {
     loadRemoteDataMetrics().then(async (metrics) => {
       if (!active) return;
       setRemoteMetrics(metrics);
-      await refreshRemoteDataStatuses();
+      await refreshRemoteDataStatuses(metrics);
       if (active) setMetricsLoading(false);
     });
 
@@ -296,6 +300,22 @@ export function AdminPage({ role }: { role?: AppRole }) {
     }
   }
 
+  async function handlePriceCostFile(file?: File) {
+    if (!file) return;
+    setActiveLoad("price-costs");
+    setProgress({ title: "Leyendo precios y costos", detail: file.name, current: 0, total: 1 });
+    try {
+      const parsedRows = await parsePriceCostFile(file);
+      setPriceCostRows(parsedRows);
+      setMessage(`Precios y costos cargados: ${parsedRows.length} SKU detectados.`);
+    } catch (error) {
+      setPriceCostRows([]);
+      setMessage(error instanceof Error ? error.message : "No se pudo cargar el archivo de precios y costos.");
+    } finally {
+      setProgress(null);
+    }
+  }
+
   async function handleInventoryFile(file?: File) {
     if (!file) return;
     setActiveLoad("inventory");
@@ -377,6 +397,18 @@ export function AdminPage({ role }: { role?: AppRole }) {
     }
   }
 
+  async function syncPriceCosts() {
+    setProgress({ title: "Actualizando precios y costos", detail: "Actualizando solo las columnas de precio y costo", current: 0, total: priceCostRows.length });
+    try {
+      const result = await syncProductPricesCostsToSupabase(priceCostRows, (current, total, detail) => {
+        setProgress({ title: "Actualizando precios y costos", detail: detail ?? `${current} de ${total} SKU`, current, total });
+      });
+      setMessage(result.message);
+    } finally {
+      setProgress(null);
+    }
+  }
+
   async function syncInventory() {
     setProgress({ title: "Sincronizando inventario", detail: "Preparando reemplazo total", current: 0, total: inventoryRows.length });
     try {
@@ -411,10 +443,17 @@ export function AdminPage({ role }: { role?: AppRole }) {
 
       <div className="metrics">
         <Metric title="Promos" value={metricValue(remoteMetrics.promotions, metricsLoading)} icon={Tags} />
-        {showCustomers ? <Metric title="Clientes" value={metricValue(remoteMetrics.customers, metricsLoading)} icon={UsersRound} /> : null}
-        <Metric title="Catalogo" value={metricValue(remoteMetrics.catalog, metricsLoading)} icon={PackageSearch} />
-        {inventoryFeatureEnabled ? <Metric title="Inventario" value={metricValue(remoteMetrics.inventory, metricsLoading)} icon={Boxes} /> : null}
+        {showCustomers ? <Metric title="Clientes" value={metricValue(remoteMetrics.customers, metricsLoading, remoteMetrics.estimated?.customers)} icon={UsersRound} /> : null}
+        <Metric title="Catalogo" value={metricValue(remoteMetrics.catalog, metricsLoading, remoteMetrics.estimated?.catalog)} icon={PackageSearch} />
+        {inventoryFeatureEnabled ? <Metric title="Inventario" value={metricValue(remoteMetrics.inventory, metricsLoading, remoteMetrics.estimated?.inventory)} icon={Boxes} /> : null}
       </div>
+
+      {remoteMetrics.errors?.catalog ? (
+        <AppFeedback tone="warning" message={`No se pudo consultar el total del catálogo: ${remoteMetrics.errors.catalog}`} />
+      ) : null}
+      {remoteMetrics.estimated?.catalog || remoteMetrics.estimated?.customers || remoteMetrics.estimated?.inventory ? (
+        <p>≈ indica un total aproximado.</p>
+      ) : null}
 
       {message ? <AppFeedback tone={message.includes("completada") ? "success" : "info"} message={message} /> : null}
 
@@ -426,6 +465,7 @@ export function AdminPage({ role }: { role?: AppRole }) {
               <ProcessButton active={activeLoad === "offer-settings"} count={offerConfigRows.length} icon={SlidersHorizontal} label="Config. ofertas" onClick={() => { setActiveLoad("offer-settings"); setOfferMetricsRefreshKey(key => key + 1); }} />
               {showCustomers ? <ProcessButton active={activeLoad === "customers"} count={customerRows.length} icon={UsersRound} label="Clientes" onClick={() => setActiveLoad("customers")} /> : null}
               <ProcessButton active={activeLoad === "catalog"} count={catalogRows.length} icon={PackageSearch} label="Catalogo" onClick={() => setActiveLoad("catalog")} />
+              <ProcessButton active={activeLoad === "price-costs"} count={priceCostRows.length} icon={BadgeDollarSign} label="Precios y costos" onClick={() => setActiveLoad("price-costs")} />
               {showUsers ? <ProcessButton active={activeLoad === "users"} count={adminUsers.length} icon={ShieldCheck} label="Usuarios" onClick={() => { setActiveLoad("users"); setUsersRefreshKey((key) => key + 1); }} /> : null}
               {inventoryFeatureEnabled ? (
                 <>
@@ -490,6 +530,15 @@ export function AdminPage({ role }: { role?: AppRole }) {
                   preview={catalogRows.slice(0, 20)}
                   onFile={handleCatalogFile}
                   onSync={syncCatalog}
+                />
+              ) : null}
+
+              {activeLoad === "price-costs" ? (
+                <PriceCostLoadPanel
+                  rows={priceCostRows}
+                  preview={priceCostRows.slice(0, 20)}
+                  onFile={handlePriceCostFile}
+                  onSync={syncPriceCosts}
                 />
               ) : null}
 

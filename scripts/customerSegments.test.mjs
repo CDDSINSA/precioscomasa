@@ -21,8 +21,8 @@ test("allows exactly the six customer segments without mutating the input", () =
 });
 
 function syncHarness() {
-  const source = readFileSync(new URL("../src/services/supabase.ts", import.meta.url), "utf8");
-  const ast = ts.createSourceFile("supabase.ts", source, ts.ScriptTarget.ES2022, true);
+  const source = readFileSync(new URL("../src/services/supabase/customers.ts", import.meta.url), "utf8");
+  const ast = ts.createSourceFile("customers.ts", source, ts.ScriptTarget.ES2022, true);
   const names = ["syncCustomersToSupabase", "deduplicateCustomers", "withoutEmptyCustomerValues"];
   const functions = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text));
   assert.equal(functions.length, names.length);

@@ -105,6 +105,15 @@ export function sortProductsByInventory(products: Product[], inventory: Map<stri
   });
 }
 
+/** Prioriza stock dentro de cada página sin mover los resultados de páginas anteriores. */
+export function sortProductPagesByInventory(products: Product[], inventory: Map<string, ProductInventory>, pageSize: number) {
+  const ordered: Product[] = [];
+  for (let offset = 0; offset < products.length; offset += pageSize) {
+    ordered.push(...sortProductsByInventory(products.slice(offset, offset + pageSize), inventory));
+  }
+  return ordered;
+}
+
 export function filterProductsByDivision(products: Product[], departmentIds: Set<string>, divisionId: string) {
   if (!divisionId) return products;
   if (!departmentIds.size) return [];

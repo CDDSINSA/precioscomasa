@@ -1,8 +1,8 @@
-import { Boxes, Database, Landmark, PackageSearch, Save } from "lucide-react";
+import { BadgeDollarSign, Boxes, Database, Landmark, PackageSearch, Save } from "lucide-react";
 import { Badge, Button } from "../../../components/ui";
 import { CUSTOMER_SEGMENTS_LABEL } from "../../../services/customerSegments.mjs";
 import type { PromotionSyncMode } from "../../../services/supabase";
-import type { Customer, ImportedPromotionRow, InventoryRecord, Product, StoreLocation } from "../../../types/domain";
+import type { Customer, ImportedPromotionRow, InventoryRecord, Product, ProductPriceCostRecord, StoreLocation } from "../../../types/domain";
 import { EmptyRow, LoadPanel, PreviewFrame, UploadButton, todayIso } from "./AdminLoadPrimitives";
 
 export function PromotionLoadPanel({
@@ -178,6 +178,76 @@ export function CatalogLoadPanel({
               </tr>
             ))}
             {!preview.length ? <EmptyRow colSpan={8} label="No hay catálogo cargado." /> : null}
+          </tbody>
+        </table>
+      </PreviewFrame>
+    </LoadPanel>
+  );
+}
+
+function formatAmount(value?: number) {
+  return value === undefined ? "-" : value.toLocaleString("es-NI", { maximumFractionDigits: 4 });
+}
+
+export function PriceCostLoadPanel({
+  rows,
+  preview,
+  onFile,
+  onSync,
+}: {
+  rows: ProductPriceCostRecord[];
+  preview: ProductPriceCostRecord[];
+  onFile: (file?: File) => void;
+  onSync: () => void;
+}) {
+  const withPrice = rows.filter((row) =>
+    [row.unitRetailForaneo, row.unitRetailRetail, row.unitRetailCedi, row.unitRetailFerex].some((value) => value !== undefined),
+  ).length;
+  const withCost = rows.filter((row) =>
+    [row.avCostForaneo, row.avCostRetail, row.avCostCedi, row.avCostFerex].some((value) => value !== undefined),
+  ).length;
+
+  return (
+    <LoadPanel
+      title="Precios y costos"
+      subtitle="Segundo archivo del maestro: precio (unit_retail) y costo promedio (av_cost) de Foráneo (21), Retail (24), CEDI (1041) y Ferex (69). No borra el catálogo: solo actualiza estas columnas en los SKU existentes. Cargue primero el catálogo."
+      actions={<><UploadButton label="Cargar precios y costos" onFile={onFile} /><Button disabled={!rows.length} onClick={onSync}><BadgeDollarSign size={16} />Actualizar precios y costos</Button></>}
+      summary={[
+        ["SKU", rows.length],
+        ["Con precio", withPrice],
+        ["Con costo", withCost],
+      ]}
+    >
+      <PreviewFrame title="Precios y costos detectados">
+        <table>
+          <thead>
+            <tr>
+              <th>SKU</th>
+              <th>Precio Foráneo</th>
+              <th>Precio Retail</th>
+              <th>Precio CEDI</th>
+              <th>Precio Ferex</th>
+              <th>Costo Foráneo</th>
+              <th>Costo Retail</th>
+              <th>Costo CEDI</th>
+              <th>Costo Ferex</th>
+            </tr>
+          </thead>
+          <tbody>
+            {preview.map((row) => (
+              <tr key={row.sku}>
+                <td>{row.sku}</td>
+                <td>{formatAmount(row.unitRetailForaneo)}</td>
+                <td>{formatAmount(row.unitRetailRetail)}</td>
+                <td>{formatAmount(row.unitRetailCedi)}</td>
+                <td>{formatAmount(row.unitRetailFerex)}</td>
+                <td>{formatAmount(row.avCostForaneo)}</td>
+                <td>{formatAmount(row.avCostRetail)}</td>
+                <td>{formatAmount(row.avCostCedi)}</td>
+                <td>{formatAmount(row.avCostFerex)}</td>
+              </tr>
+            ))}
+            {!preview.length ? <EmptyRow colSpan={9} label="No hay precios y costos cargados." /> : null}
           </tbody>
         </table>
       </PreviewFrame>
